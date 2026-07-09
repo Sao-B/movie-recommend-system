@@ -1,39 +1,17 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { useUserStore } from '@/stores/user'
+import { useAuthStore } from '@/stores/auth'
 
 const routes = [
-  {
-    path: '/login',
-    name: 'Login',
-    component: () => import('@/views/LoginView.vue'),
-    meta: { requiresAuth: false },
-  },
-  {
-    path: '/',
-    name: 'Home',
-    component: () => import('@/views/HomeView.vue'),
-    meta: { requiresAuth: true },
-  },
-  {
-    path: '/movies',
-    name: 'Movies',
-    component: () => import('@/views/MoviesView.vue'),
-    meta: { requiresAuth: true },
-  },
-  {
-    path: '/movies/:id',
-    name: 'MovieDetail',
-    component: () => import('@/views/MovieDetailView.vue'),
-    meta: { requiresAuth: true },
-  },
+  { path: '/', name: 'home', component: () => import('@/views/HomeView.vue') },
+  { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue') },
+  { path: '/register', name: 'register', component: () => import('@/views/RegisterView.vue') },
+  { path: '/movies/:id', name: 'movie-detail', component: () => import('@/views/MovieDetailView.vue') },
   {
     path: '/recommendations',
-    name: 'Recommendations',
+    name: 'recommendations',
     component: () => import('@/views/RecommendationsView.vue'),
     meta: { requiresAuth: true },
   },
-  // 未匹配路径重定向首页
-  { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 
 const router = createRouter({
@@ -41,11 +19,13 @@ const router = createRouter({
   routes,
 })
 
-// 全局路由守卫：未登录则跳到登录页
 router.beforeEach((to) => {
-  const userStore = useUserStore()
-  if (to.meta.requiresAuth && !userStore.token) {
-    return { name: 'Login' }
+  const auth = useAuthStore()
+  if (to.meta.requiresAuth && !auth.isLoggedIn) {
+    return { name: 'login', query: { redirect: to.fullPath } }
+  }
+  if ((to.name === 'login' || to.name === 'register') && auth.isLoggedIn) {
+    return { name: 'home' }
   }
 })
 

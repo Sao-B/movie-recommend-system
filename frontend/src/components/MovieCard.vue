@@ -1,50 +1,43 @@
 <template>
-  <el-card class="movie-card" shadow="hover" @click="$emit('click')">
-    <!-- 封面占位 -->
-    <div class="poster">
-      <span class="poster-year">{{ movie.year || '?' }}</span>
+  <el-card class="movie-card" shadow="hover" @click="$router.push('/movies/' + movie.movie_id)">
+    <div class="movie-year" v-if="movie.year">{{ movie.year }}</div>
+    <h4 class="movie-title">{{ movie.title }}</h4>
+    <div class="movie-genres">
+      <el-tag
+        v-for="g in movie.genres?.slice(0, 3)"
+        :key="g"
+        size="small"
+        type="info"
+        class="genre-tag"
+      >{{ g }}</el-tag>
     </div>
-    <div class="info">
-      <div class="title" :title="movie.title">{{ movie.title }}</div>
-      <div class="genres">
-        <el-tag v-for="g in (movie.genres || []).slice(0, 3)" :key="g"
-                size="small" style="margin-right:4px; margin-bottom:4px">
-          {{ g }}
-        </el-tag>
-      </div>
-      <div v-if="extra" class="extra">{{ extra }}</div>
+    <div v-if="predictedRating" class="predicted">
+      预测评分：<strong>{{ predictedRating }}</strong>
     </div>
   </el-card>
 </template>
 
 <script setup>
 defineProps({
-  movie: { type: Object, required: true },
-  extra: { type: String, default: '' },
+  movie:          { type: Object, required: true },
+  predictedRating:{ type: [Number, String], default: null },
 })
-defineEmits(['click'])
 </script>
 
 <style scoped>
-.movie-card { cursor: pointer; height: 100%; }
-.poster {
+.movie-card {
+  cursor: pointer;
   height: 160px;
-  background: linear-gradient(135deg, #667eea, #764ba2);
-  border-radius: 4px;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+  justify-content: space-between;
+  transition: transform .15s;
 }
-.poster-year { color: #fff; font-size: 28px; font-weight: 700; opacity: .7; }
-.info { padding: 10px 0 0; }
-.title {
-  font-weight: 600;
-  font-size: 14px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  margin-bottom: 6px;
-}
-.genres { min-height: 28px; }
-.extra { color: #409eff; font-size: 12px; margin-top: 4px; }
+.movie-card:hover { transform: translateY(-3px); }
+.movie-year  { font-size: 12px; color: #999; margin-bottom: 4px; }
+.movie-title { font-size: 14px; margin: 0 0 8px; line-height: 1.4;
+               display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.movie-genres { display: flex; flex-wrap: wrap; gap: 4px; }
+.genre-tag   { font-size: 11px; }
+.predicted   { font-size: 12px; color: #e6a23c; margin-top: 6px; }
 </style>

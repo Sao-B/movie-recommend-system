@@ -1,7 +1,7 @@
-import client from './client'
+import http from './index'
 
-export const moviesApi = {
-  list:   (params) => client.get('/movies', { params }),
-  detail: (id)     => client.get(`/movies/${id}`),
-  genres: ()       => client.get('/movies/genres'),
+export const apiMovies = {
+  list:   (params) => http.get('/movies/',     { params }),
+  detail: (id)     => http.get('/movies/' + id),
+  genres: ()       => http.get('/movies/genres'),
 }

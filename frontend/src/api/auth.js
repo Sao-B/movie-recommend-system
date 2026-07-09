@@ -1,6 +1,6 @@
-import client from './client'
+import http from './index'
 
-export const authApi = {
-  login:    (data) => client.post('/auth/login', data),
-  register: (data) => client.post('/auth/register', data),
+export const apiAuth = {
+  login:    (username, password) => http.post('/auth/login',    { username, password }),
+  register: (username, password) => http.post('/auth/register', { username, password }),
 }

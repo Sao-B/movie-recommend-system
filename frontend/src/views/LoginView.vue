@@ -1,80 +1,51 @@
 <template>
-  <div class="login-page">
-    <el-card class="login-card">
-      <h2 style="text-align:center; margin-bottom:24px">🎬 电影推荐系统</h2>
-
-      <el-tabs v-model="tab" stretch>
-        <el-tab-pane label="登录" name="login">
-          <el-form :model="form" @submit.prevent="handleLogin" label-position="top">
-            <el-form-item label="用户名">
-              <el-input v-model="form.username" placeholder="请输入用户名" />
-            </el-form-item>
-            <el-form-item label="密码">
-              <el-input v-model="form.password" type="password" placeholder="请输入密码"
-                        show-password @keyup.enter="handleLogin" />
-            </el-form-item>
-            <el-button type="primary" style="width:100%" :loading="loading" @click="handleLogin">
-              登录
-            </el-button>
-          </el-form>
-        </el-tab-pane>
-
-        <el-tab-pane label="注册" name="register">
-          <el-form :model="form" @submit.prevent="handleRegister" label-position="top">
-            <el-form-item label="用户名">
-              <el-input v-model="form.username" placeholder="请输入用户名（3~50字符）" />
-            </el-form-item>
-            <el-form-item label="密码">
-              <el-input v-model="form.password" type="password" placeholder="至少6位" show-password />
-            </el-form-item>
-            <el-button type="primary" style="width:100%" :loading="loading" @click="handleRegister">
-              注册
-            </el-button>
-          </el-form>
-        </el-tab-pane>
-      </el-tabs>
+  <div class="auth-wrapper">
+    <el-card class="auth-card">
+      <template #header><h2 class="card-title">登录</h2></template>
+      <el-form :model="form" :rules="rules" ref="formRef" label-position="top">
+        <el-form-item label="用户名" prop="username">
+          <el-input v-model="form.username" placeholder="请输入用户名" prefix-icon="User" />
+        </el-form-item>
+        <el-form-item label="密码" prop="password">
+          <el-input v-model="form.password" type="password" placeholder="请输入密码"
+            prefix-icon="Lock" show-password @keyup.enter="submit" />
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" :loading="loading" class="full-btn" @click="submit">登录</el-button>
+        </el-form-item>
+      </el-form>
+      <div class="auth-footer">还没有账号？<router-link to="/register">立即注册</router-link></div>
     </el-card>
   </div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, reactive } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { useUserStore } from '@/stores/user'
+import { useAuthStore } from '@/stores/auth'
 
-const router    = useRouter()
-const userStore = useUserStore()
-
-const tab     = ref('login')
+const router  = useRouter()
+const route   = useRoute()
+const auth    = useAuthStore()
+const formRef = ref()
 const loading = ref(false)
-const form    = ref({ username: '', password: '' })
+const form    = reactive({ username: '', password: '' })
 
-async function handleLogin() {
-  if (!form.value.username || !form.value.password) {
-    return ElMessage.warning('请填写用户名和密码')
-  }
-  loading.value = true
-  try {
-    await userStore.login(form.value.username, form.value.password)
-    router.push('/')
-  } finally {
-    loading.value = false
-  }
+const rules = {
+  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+  password: [{ required: true, message: '请输入密码',   trigger: 'blur' }],
 }
 
-async function handleRegister() {
-  if (!form.value.username || !form.value.password) {
-    return ElMessage.warning('请填写用户名和密码')
-  }
-  if (form.value.password.length < 6) {
-    return ElMessage.warning('密码至少 6 位')
-  }
+async function submit() {
+  await formRef.value.validate()
   loading.value = true
   try {
-    await userStore.register(form.value.username, form.value.password)
-    ElMessage.success('注册成功，已自动登录')
-    router.push('/')
+    await auth.login(form.username, form.password)
+    ElMessage.success('登录成功')
+    router.push(route.query.redirect || '/')
+  } catch (msg) {
+    ElMessage.error(typeof msg === 'string' ? msg : '登录失败')
   } finally {
     loading.value = false
   }
@@ -82,15 +53,9 @@ async function handleRegister() {
 </script>
 
 <style scoped>
-.login-page {
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-}
-.login-card {
-  width: 380px;
-  padding: 16px;
-}
+.auth-wrapper { min-height: calc(100vh - 60px); display: flex; align-items: center; justify-content: center; }
+.auth-card    { width: 400px; }
+.card-title   { margin: 0; text-align: center; font-size: 20px; }
+.full-btn     { width: 100%; }
+.auth-footer  { text-align: center; color: #666; font-size: 14px; margin-top: 8px; }
 </style>

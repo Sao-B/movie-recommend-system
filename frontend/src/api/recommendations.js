@@ -1,5 +1,5 @@
-import client from './client'
+import http from './index'
 
-export const recommendationsApi = {
-  mine: () => client.get('/recommendations'),
+export const apiRecommendations = {
+  get: () => http.get('/recommendations/'),
 }

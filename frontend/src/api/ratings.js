@@ -1,6 +1,6 @@
-import client from './client'
+import http from './index'
 
-export const ratingsApi = {
-  submit: (data) => client.post('/ratings', data),
-  mine:   ()     => client.get('/ratings/me'),
+export const apiRatings = {
+  submit: (movie_id, rating) => http.post('/ratings/',  { movie_id, rating }),
+  mine:   ()                 => http.get('/ratings/me'),
 }

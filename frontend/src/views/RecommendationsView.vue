@@ -1,40 +1,46 @@
 <template>
-  <div>
-    <el-card header="🎯 专属推荐" style="margin-bottom:16px">
-      <el-alert v-if="!loading && recs.length === 0"
-                title="暂无推荐数据"
-                description="请先前往【电影库】评分几部电影，等待系统离线训练后即可获得个性化推荐。"
-                type="info" show-icon :closable="false" />
-    </el-card>
-
-    <el-row v-loading="loading" :gutter="16">
-      <el-col v-for="item in recs" :key="item.movie.movie_id"
-              :xs="24" :sm="12" :md="8" :lg="6" :xl="4"
-              style="margin-bottom:16px">
-        <MovieCard :movie="item.movie" :extra="`预测评分 ${item.predicted_rating}`"
-                   @click="router.push(`/movies/${item.movie.movie_id}`)" />
-      </el-col>
-    </el-row>
+  <div class="page">
+    <h2 class="page-title">🎯 我的个性化推荐</h2>
+    <p class="page-sub">基于 ALS 协同过滤，为你精选的 Top-20 电影</p>
+    <div v-loading="loading">
+      <el-empty v-if="!loading && recs.length === 0"
+        description="暂无推荐数据，请先评几部电影，等待下次离线训练后即可获得推荐" />
+      <el-row v-else :gutter="16">
+        <el-col v-for="r in recs" :key="r.movie && r.movie.movie_id"
+          :xs="12" :sm="8" :md="6" :lg="4">
+          <MovieCard
+            :movie="r.movie"
+            :predicted-rating="r.predicted_rating && r.predicted_rating.toFixed(2)"
+          />
+        </el-col>
+      </el-row>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
-import { recommendationsApi } from '@/api/recommendations'
+import { ElMessage } from 'element-plus'
 import MovieCard from '@/components/MovieCard.vue'
+import { apiRecommendations } from '@/api/recommendations'
 
-const router  = useRouter()
 const recs    = ref([])
-const loading = ref(false)
+const loading = ref(true)
 
 onMounted(async () => {
-  loading.value = true
   try {
-    const res = await recommendationsApi.mine()
-    recs.value = res.data.data || []
+    const data = await apiRecommendations.get()
+    recs.value = data.data || []
+  } catch (msg) {
+    ElMessage.error(typeof msg === 'string' ? msg : '加载推荐失败')
   } finally {
     loading.value = false
   }
 })
 </script>
+
+<style scoped>
+.page       { max-width: 1200px; margin: 0 auto; padding: 20px; }
+.page-title { margin: 0 0 4px; }
+.page-sub   { color: #888; margin: 0 0 20px; font-size: 14px; }
+</style>
