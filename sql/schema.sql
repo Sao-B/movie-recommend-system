@@ -1,7 +1,10 @@
 -- ============================================================
 -- 个性化电影推荐系统 — MySQL 建库建表 DDL
--- 执行方式: mysql -u root -p < sql/schema.sql
+-- 执行方式: mysql -u root -p
+--          SOURCE d:/Sundries/Paper/Project/sql/schema.sql;
 -- ============================================================
+
+SET NAMES utf8mb4;
 
 CREATE DATABASE IF NOT EXISTS movie_recommend
   DEFAULT CHARACTER SET utf8mb4
@@ -45,7 +48,7 @@ CREATE TABLE IF NOT EXISTS ratings (
   UNIQUE KEY uk_user_movie (user_id, movie_id),
   INDEX idx_user   (user_id),
   INDEX idx_movie  (movie_id),
-  CONSTRAINT fk_ratings_movie FOREIGN KEY (movie_id) REFERENCES movies (movie_id)
+  INDEX idx_movie_ref (movie_id)   -- 无外键约束，由应用层保证一致性
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户评分';
 
 -- ----------------------------------------------------------
@@ -56,9 +59,9 @@ CREATE TABLE IF NOT EXISTS recommendations (
   user_id          INT       NOT NULL COMMENT 'users.id',
   movie_id         INT       NOT NULL COMMENT 'movies.movie_id',
   predicted_rating FLOAT     NOT NULL COMMENT 'ALS 预测评分',
-  rank             SMALLINT  NOT NULL COMMENT '该用户下的推荐排名，1 最高',
+  `rank`           SMALLINT  NOT NULL COMMENT '该用户下的推荐排名，1 最高',
   generated_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '批次时间',
   PRIMARY KEY (id),
-  INDEX idx_user_rank (user_id, rank),
-  CONSTRAINT fk_rec_movie FOREIGN KEY (movie_id) REFERENCES movies (movie_id)
+  INDEX idx_user_rank (user_id, `rank`),
+  INDEX idx_rec_movie (movie_id)   -- 无外键约束，由应用层保证一致性
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ALS 推荐结果';
