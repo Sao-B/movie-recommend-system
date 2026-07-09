@@ -21,6 +21,7 @@ def write_df_to_mysql(df, table, jdbc_url, user, password, mode="overwrite"):
         .option("driver", "com.mysql.cj.jdbc.Driver")
         .option("batchsize", 10000)
         .option("isolationLevel", "READ_COMMITTED")
+        .option("truncate", "true")   # TRUNCATE 代替 DROP，保留表结构与索引
         .mode(mode)
         .save()
     )
