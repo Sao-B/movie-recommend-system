@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Environment
+.env
+*.env.local
+
+# Node / Vue
+node_modules/
+frontend/dist/
+frontend/.cache/
+
+# Data (too large for git)
+data/raw/
+data/processed/
+*.csv
+*.dat
+
+# Hadoop runtime dirs
+hadoop/tmp/
+hadoop/dfs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# MySQL
+*.sql.bak

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<configuration>
+  <!-- HDFS NameNode 地址（伪分布式） -->
+  <property>
+    <name>fs.defaultFS</name>
+    <value>hdfs://localhost:9000</value>
+  </property>
+
+  <!-- Hadoop 临时目录，namenode/datanode 数据默认放在此处子目录下 -->
+  <property>
+    <name>hadoop.tmp.dir</name>
+    <value>/opt/hadoop/tmp</value>
+    <description>修改为实际 Hadoop 安装路径下的 tmp 目录</description>
+  </property>
+</configuration>

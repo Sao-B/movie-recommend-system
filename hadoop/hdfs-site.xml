@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<configuration>
+  <!-- 伪分布式：副本数设为 1 -->
+  <property>
+    <name>dfs.replication</name>
+    <value>1</value>
+  </property>
+
+  <property>
+    <name>dfs.namenode.name.dir</name>
+    <value>/opt/hadoop/dfs/name</value>
+    <description>NameNode 元数据存储路径</description>
+  </property>
+
+  <property>
+    <name>dfs.datanode.data.dir</name>
+    <value>/opt/hadoop/dfs/data</value>
+    <description>DataNode 数据块存储路径</description>
+  </property>
+
+  <!-- 关闭安全模式检查（开发环境） -->
+  <property>
+    <name>dfs.permissions.enabled</name>
+    <value>false</value>
+  </property>
+</configuration>
