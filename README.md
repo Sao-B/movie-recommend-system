@@ -28,7 +28,7 @@ MovieLens-32M (CSV)
 | 分布式存储 | Hadoop HDFS（伪分布式，hadoop102 主节点） |
 | 离线计算 | PySpark 3.5 + MLlib ALS |
 | 关系数据库 | MySQL 8.0 |
-| 后端 API | Python 3.10 + Flask 3 + SQLAlchemy 2.0.40 |
+| 后端 API | Python 3.12 + Flask 3 + SQLAlchemy 2.0.40 |
 | 前端 | Vue 3 + Vite + Element Plus + Pinia + Vue Router |
 
 ## 训练结果
@@ -48,7 +48,7 @@ MovieLens-32M (CSV)
 ### 1. 环境准备
 
 - Java 8+（Hadoop 依赖）
-- Python 3.10
+- Python 3.12
 - Node.js 18+
 - MySQL 8.0
 - Hadoop 3.x + Spark 3.5（部署于 Linux VM，hadoop102 主节点）
@@ -72,7 +72,7 @@ venv\Scripts\activate        # Windows
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-> 注意：需要 SQLAlchemy >= 2.0.40，旧版本与 Python 3.10+ 存在兼容性问题，requirements.txt 已固定版本。
+> 注意：需要 SQLAlchemy >= 2.0.40，requirements.txt 已固定版本。
 
 ### 4. 下载并上传数据集（在 hadoop102 执行）
 
