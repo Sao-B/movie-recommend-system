@@ -47,3 +47,7 @@ logs/
 
 # MySQL
 *.sql.bak
+
+# Claude Code / Agent 框架（非项目代码）
+.agents/
+.claude/skills/
