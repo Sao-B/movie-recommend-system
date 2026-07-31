@@ -1,4 +1,4 @@
-from flask import Flask
+from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from .db import db
@@ -22,7 +22,9 @@ def create_app(config_obj=None):
 
     # 扩展初始化
     db.init_app(app)
-    CORS(app, origins=app.config.get("CORS_ORIGINS", ["*"]))
+    # CORS_ORIGINS 未配置时默认限制本地开发端口，不开放 "*"
+    origins = app.config.get("CORS_ORIGINS") or ["http://localhost:5173"]
+    CORS(app, origins=origins)
     JWTManager(app)
 
     # 蓝图注册
@@ -34,12 +36,10 @@ def create_app(config_obj=None):
     # 全局错误处理
     @app.errorhandler(404)
     def not_found(e):
-        from flask import jsonify
         return jsonify({"msg": "资源不存在"}), 404
 
     @app.errorhandler(500)
     def server_error(e):
-        from flask import jsonify
         return jsonify({"msg": "服务器内部错误"}), 500
 
     return app

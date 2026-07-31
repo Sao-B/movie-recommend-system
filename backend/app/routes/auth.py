@@ -18,6 +18,8 @@ def register():
         return jsonify({"msg": "用户名最长 50 个字符"}), 400
     if len(password) < 6:
         return jsonify({"msg": "密码至少 6 位"}), 400
+    if len(password) > 128:
+        return jsonify({"msg": "密码最长 128 位"}), 400
 
     if User.query.filter_by(username=username).first():
         return jsonify({"msg": "用户名已存在"}), 409

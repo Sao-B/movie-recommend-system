@@ -48,6 +48,8 @@ def main():
         )
         .na.drop()
     )
+    # 缓存 ratings，避免 randomSplit 后多次 count() 重复计算
+    ratings.cache()
     total = ratings.count()
     print(f"有效评分总数: {total:,}")
 

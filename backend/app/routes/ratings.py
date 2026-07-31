@@ -22,9 +22,13 @@ def submit_rating():
 
     if movie_id is None or rating is None:
         return jsonify({"msg": "movie_id 和 rating 为必填项"}), 400
-    if not (0.5 <= float(rating) <= 5.0):
+    try:
+        rating = float(rating)
+    except (TypeError, ValueError):
+        return jsonify({"msg": "rating 必须是数字"}), 400
+    if not (0.5 <= rating <= 5.0):
         return jsonify({"msg": "rating 范围 0.5 ~ 5.0"}), 400
-    if not Movie.query.get(movie_id):
+    if not db.session.get(Movie, movie_id):
         return jsonify({"msg": "电影不存在"}), 404
 
     # 已有评分则更新，没有则新建
@@ -33,14 +37,16 @@ def submit_rating():
     ).first()
 
     if existing:
-        existing.rating = float(rating)
+        existing.rating = rating
+        status_code = 200
     else:
         existing = Rating(
             user_id=user_id,
             movie_id=int(movie_id),
-            rating=float(rating)
+            rating=rating
         )
         db.session.add(existing)
+        status_code = 201
 
     try:
         db.session.commit()
@@ -48,7 +54,7 @@ def submit_rating():
         db.session.rollback()
         return jsonify({"msg": "评分提交失败，请重试"}), 500
 
-    return jsonify({"msg": "评分成功", "data": existing.to_dict()}), 201
+    return jsonify({"msg": "评分成功", "data": existing.to_dict()}), status_code
 
 
 @ratings_bp.get("/me")

@@ -6,7 +6,6 @@ preprocess.py — 从 HDFS 读取 MovieLens 原始 movies.csv，
     spark-submit --master local[*] spark/preprocess.py
 """
 
-import re
 import sys
 import os
 
@@ -14,18 +13,9 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from pyspark.sql import functions as F
-from pyspark.sql.types import IntegerType
 
 from utils.spark_session import get_spark_session
 from utils.mysql_utils import write_df_to_mysql
-
-
-def _parse_year(title: str):
-    """从标题末尾的 (YYYY) 中提取年份，如 'Toy Story (1995)' → 1995。"""
-    if title is None:
-        return None
-    match = re.search(r'\((\d{4})\)\s*$', title)
-    return int(match.group(1)) if match else None
 
 
 def main():
@@ -40,17 +30,19 @@ def main():
     )
 
     # ── 2. 解析年份，规范列名 ─────────────────────────────────────
-    parse_year_udf = F.udf(_parse_year, IntegerType())
+    # 使用 Spark 原生 regexp_extract 替代 Python UDF，性能更好
     movies = (
         movies_raw
         .select(
             F.col("movieId").cast("int").alias("movie_id"),
             F.col("title"),
             F.col("genres"),
-            parse_year_udf(F.col("title")).alias("year")
+            F.regexp_extract(F.col("title"), r'\((\d{4})\)\s*$', 1)
+             .cast("int")
+             .alias("year")
         )
-        .dropDuplicates(["movie_id"])
-        .na.drop(subset=["movie_id", "title"])
+        .na.drop(subset=["movie_id", "title"])  # 先去除 null 行
+        .dropDuplicates(["movie_id"])           # 再去重，效率更高
     )
     count = movies.count()
     print(f"清洗后电影总数: {count:,}")

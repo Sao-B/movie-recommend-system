@@ -40,7 +40,9 @@ def list_movies():
 @movies_bp.get("/<int:movie_id>")
 def get_movie(movie_id: int):
     """GET /api/movies/<id> — 电影详情 + 平均评分"""
-    movie = Movie.query.get_or_404(movie_id)
+    movie = db.session.get(Movie, movie_id)
+    if movie is None:
+        return jsonify({"msg": "电影不存在"}), 404
 
     avg_rating = (
         db.session.query(func.avg(Rating.rating))

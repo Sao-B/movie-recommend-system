@@ -1,6 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from werkzeug.security import generate_password_hash, check_password_hash
 from .db import db
+
+
+def _utcnow():
+    """返回时区感知的 UTC 当前时间（替代已弃用的 datetime.utcnow）。"""
+    return datetime.now(timezone.utc)
 
 
 class User(db.Model):
@@ -9,7 +14,7 @@ class User(db.Model):
     id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
     username      = db.Column(db.String(50), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    created_at    = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at    = db.Column(db.DateTime, default=_utcnow)
 
     def set_password(self, password: str):
         self.password_hash = generate_password_hash(password)
@@ -30,10 +35,12 @@ class Movie(db.Model):
     year     = db.Column(db.SmallInteger)
 
     def to_dict(self):
+        # 同时处理 None 和空字符串，避免 "".split("|") 返回 [""]
+        genres_list = [g for g in (self.genres or "").split("|") if g]
         return {
             "movie_id": self.movie_id,
             "title":    self.title,
-            "genres":   self.genres.split("|") if self.genres else [],
+            "genres":   genres_list,
             "year":     self.year,
         }
 
@@ -46,7 +53,7 @@ class Rating(db.Model):
     movie_id = db.Column(db.Integer, db.ForeignKey("movies.movie_id"),
                          nullable=False, index=True)
     rating   = db.Column(db.Float, nullable=False)
-    rated_at = db.Column(db.DateTime, default=datetime.utcnow)
+    rated_at = db.Column(db.DateTime, default=_utcnow)
 
     movie = db.relationship("Movie", backref="ratings")
 
@@ -69,7 +76,7 @@ class Recommendation(db.Model):
                                  nullable=False)
     predicted_rating = db.Column(db.Float, nullable=False)
     rank             = db.Column(db.SmallInteger, nullable=False)
-    generated_at     = db.Column(db.DateTime, default=datetime.utcnow)
+    generated_at     = db.Column(db.DateTime, default=_utcnow)
 
     movie = db.relationship("Movie", backref="recommendations")
 

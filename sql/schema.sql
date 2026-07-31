@@ -42,13 +42,12 @@ CREATE TABLE IF NOT EXISTS ratings (
   id        BIGINT    NOT NULL AUTO_INCREMENT,
   user_id   INT       NOT NULL COMMENT '对应 users.id 或 MovieLens 用户 ID',
   movie_id  INT       NOT NULL COMMENT '对应 movies.movie_id',
-  rating    FLOAT     NOT NULL COMMENT '评分值 0.5~5.0',
+  rating    FLOAT     NOT NULL COMMENT '评分值 0.5~5.0' CHECK (rating >= 0.5 AND rating <= 5.0),
   rated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uk_user_movie (user_id, movie_id),
   INDEX idx_user   (user_id),
-  INDEX idx_movie  (movie_id),
-  INDEX idx_movie_ref (movie_id)   -- 无外键约束，由应用层保证一致性
+  INDEX idx_movie  (movie_id)   -- 无外键约束，由应用层保证一致性
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户评分';
 
 -- ----------------------------------------------------------

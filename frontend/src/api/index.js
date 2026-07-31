@@ -16,7 +16,10 @@ http.interceptors.request.use((config) => {
 http.interceptors.response.use(
   (res) => res.data,
   (err) => {
-    if (err.response?.status === 401) {
+    // 401 分两种情况：
+    // 1. 登录接口本身返回 401（密码错误）→ 不跳转，让调用方处理
+    // 2. 其他接口返回 401（token 过期）→ 清除凭据并跳转登录页
+    if (err.response?.status === 401 && window.location.pathname !== '/login') {
       localStorage.removeItem('token')
       localStorage.removeItem('user')
       window.location.href = '/login'

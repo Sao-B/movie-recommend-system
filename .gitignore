@@ -16,6 +16,10 @@ build/
 .env
 *.env.local
 
+# Configuration (contains credentials)
+config.yaml
+config.local.yaml
+
 # Node / Vue
 node_modules/
 frontend/dist/
