@@ -1,0 +1,39 @@
+# Copy this file to config.yaml and replace all placeholder values locally.
+
+# Hadoop / HDFS
+hdfs:
+  namenode: hdfs://localhost:9000
+  data_dir: /movielens
+  ratings_path: /movielens/ratings.csv
+  movies_path: /movielens/movies.csv
+
+# MySQL
+mysql:
+  host: localhost
+  port: 3306
+  user: movie_app
+  password: "change_me"
+  database: movie_recommend
+  charset: utf8mb4
+
+# PySpark ALS parameters
+als:
+  rank: 50
+  max_iter: 10
+  reg_param: 0.1
+  cold_start_strategy: drop
+  train_ratio: 0.8
+  top_n: 20
+
+# Flask
+flask:
+  host: "127.0.0.1"
+  port: 5000
+  debug: false
+  secret_key: "replace_with_a_random_secret"
+
+# CORS
+cors:
+  origins:
+    - "http://localhost:5173"
+    - "http://127.0.0.1:5173"

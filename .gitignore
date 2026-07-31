@@ -44,6 +44,7 @@ hadoop/dfs/
 # OS
 .DS_Store
 Thumbs.db
+*.url
 
 # Logs
 *.log
