@@ -64,7 +64,11 @@ const filters     = reactive({ q: '', genre: '', year: null })
 async function fetchMovies() {
   loading.value = true
   try {
-    const params = { page: currentPage.value, per_page: perPage }
+    const params = {
+      page: currentPage.value,
+      per_page: perPage,
+      sort: 'popular'  // 默认按热门排序
+    }
     if (filters.q)     params.q     = filters.q
     if (filters.genre) params.genre = filters.genre
     if (filters.year)  params.year  = filters.year
