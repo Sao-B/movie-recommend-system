@@ -7,6 +7,9 @@
         <router-link v-if="auth.isLoggedIn" to="/recommendations" class="nav-link">
           我的推荐
         </router-link>
+        <router-link v-if="auth.isAdmin" to="/admin" class="nav-link admin-link">
+          管理后台
+        </router-link>
         <template v-if="auth.isLoggedIn">
           <span class="username">{{ auth.user?.username }}</span>
           <el-button size="small" @click="handleLogout">退出</el-button>
@@ -71,5 +74,10 @@ function handleLogout() {
   font-size: 14px;
 }
 .nav-link:hover { color: #409eff; }
+.admin-link {
+  color: #e6a23c;
+  font-weight: 500;
+}
+.admin-link:hover { color: #f0a020; }
 .username { font-size: 14px; color: #666; }
 </style>
