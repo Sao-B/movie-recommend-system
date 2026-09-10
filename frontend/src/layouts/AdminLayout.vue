@@ -1,6 +1,10 @@
 <template>
   <el-container class="admin-layout">
     <el-aside width="200px">
+      <div class="logo">
+        <el-icon><Management /></el-icon>
+        <span>管理后台</span>
+      </div>
       <el-menu
         :default-active="activeMenu"
         router
@@ -28,10 +32,6 @@
           <el-icon><Setting /></el-icon>
           <span>模型管理</span>
         </el-menu-item>
-        <el-menu-item index="/" class="back-home">
-          <el-icon><HomeFilled /></el-icon>
-          <span>返回前台</span>
-        </el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>
@@ -39,7 +39,9 @@
         <h2>电影推荐系统 - 管理后台</h2>
         <div class="user-info">
           <span>管理员: {{ username }}</span>
-          <el-button type="danger" size="small" @click="handleLogout">退出</el-button>
+          <el-button link @click="router.push('/')">返回前台</el-button>
+          <el-divider direction="vertical" />
+          <el-button type="danger" link @click="handleLogout">退出登录</el-button>
         </div>
       </el-header>
       <el-main>
@@ -53,7 +55,7 @@
 import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { DataAnalysis, User, Film, Star, Setting, HomeFilled } from '@element-plus/icons-vue'
+import { DataAnalysis, User, Film, Star, Setting, Management } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -77,6 +79,18 @@ const handleLogout = () => {
   background-color: #545c64;
 }
 
+.logo {
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: bold;
+  color: #fff;
+  gap: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
 .el-header {
   display: flex;
   justify-content: space-between;
@@ -94,16 +108,11 @@ const handleLogout = () => {
 .user-info {
   display: flex;
   align-items: center;
-  gap: 15px;
+  gap: 10px;
 }
 
 .el-main {
   background-color: #f5f5f5;
   padding: 20px;
-}
-
-.back-home {
-  margin-top: 20px;
-  border-top: 1px solid rgba(255, 255, 255, 0.2);
 }
 </style>
