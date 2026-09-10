@@ -192,7 +192,7 @@ mysql:
   host: 192.168.10.1    # 宿主机 IP（VM 通过此地址连接宿主机上的 MySQL）
   port: 3306
   user: root
-  password: "000000"    # ⚠ 按实际密码修改
+  password: change_me    # ⚠ 按实际密码修改
   database: movie_recommend
   charset: utf8mb4
 

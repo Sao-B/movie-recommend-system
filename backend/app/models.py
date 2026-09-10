@@ -14,6 +14,7 @@ class User(db.Model):
     id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
     username      = db.Column(db.String(50), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
+    role          = db.Column(db.Enum('user', 'admin'), nullable=False, default='user', server_default='user')
     created_at    = db.Column(db.DateTime, default=_utcnow)
 
     def set_password(self, password: str):
@@ -22,8 +23,12 @@ class User(db.Model):
     def check_password(self, password: str) -> bool:
         return check_password_hash(self.password_hash, password)
 
+    def is_admin(self) -> bool:
+        """检查用户是否为管理员"""
+        return self.role == 'admin'
+
     def to_dict(self):
-        return {"id": self.id, "username": self.username}
+        return {"id": self.id, "username": self.username, "role": self.role}
 
 
 class Movie(db.Model):
@@ -46,10 +51,11 @@ class Movie(db.Model):
 
 
 class Rating(db.Model):
-    __tablename__ = "ratings"
+    __tablename__ = "user_ratings"
 
     id       = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
-    user_id  = db.Column(db.Integer, nullable=False, index=True)
+    user_id  = db.Column(db.Integer, db.ForeignKey("users.id"),
+                         nullable=False, index=True)
     movie_id = db.Column(db.Integer, db.ForeignKey("movies.movie_id"),
                          nullable=False, index=True)
     rating   = db.Column(db.Float, nullable=False)
@@ -71,6 +77,7 @@ class Recommendation(db.Model):
     __tablename__ = "recommendations"
 
     id               = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
+    model_version    = db.Column(db.String(64), nullable=True, index=True)
     user_id          = db.Column(db.Integer, nullable=False, index=True)
     movie_id         = db.Column(db.Integer, db.ForeignKey("movies.movie_id"),
                                  nullable=False)
@@ -86,3 +93,25 @@ class Recommendation(db.Model):
             "predicted_rating": round(self.predicted_rating, 4),
             "movie":            self.movie.to_dict() if self.movie else None,
         }
+
+
+class ModelVersion(db.Model):
+    __tablename__ = "model_versions"
+
+    version      = db.Column(db.String(64), primary_key=True)
+    rank         = db.Column(db.SmallInteger, nullable=False)
+    reg_param    = db.Column(db.Float, nullable=False)
+    status       = db.Column(db.String(16), nullable=False, index=True)
+    generated_at = db.Column(db.DateTime, default=_utcnow)
+    activated_at = db.Column(db.DateTime)
+
+
+class ModelItemFactor(db.Model):
+    __tablename__ = "model_item_factors"
+
+    model_version = db.Column(
+        db.String(64), db.ForeignKey("model_versions.version"), primary_key=True
+    )
+    movie_id     = db.Column(db.Integer, primary_key=True)
+    factors      = db.Column(db.Text, nullable=False)
+    generated_at = db.Column(db.DateTime, default=_utcnow)
