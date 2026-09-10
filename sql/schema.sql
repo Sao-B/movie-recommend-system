@@ -35,7 +35,10 @@ CREATE TABLE IF NOT EXISTS users (
   username     VARCHAR(50)  NOT NULL UNIQUE         COMMENT '用户名，唯一',
   password_hash VARCHAR(255) NOT NULL                COMMENT 'bcrypt 哈希密码',
   created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '注册时间',
-  PRIMARY KEY (id)
+  role         ENUM('user', 'admin') NOT NULL DEFAULT 'user' COMMENT '用户角色：user=普通用户, admin=管理员',
+  PRIMARY KEY (id),
+  INDEX idx_username (username),
+  INDEX idx_user_role (role)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='系统注册用户表';
 
 -- ============================================================
@@ -94,7 +97,9 @@ CREATE TABLE IF NOT EXISTS ratings (
   PRIMARY KEY (id),
   UNIQUE KEY uk_user_movie (user_id, movie_id),
   INDEX idx_user   (user_id),
-  INDEX idx_movie  (movie_id)
+  INDEX idx_movie  (movie_id),
+  CONSTRAINT fk_ratings_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_ratings_movie FOREIGN KEY (movie_id) REFERENCES movies(movie_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='遗留评分数据（已废弃，不再使用）';
 
 -- ============================================================

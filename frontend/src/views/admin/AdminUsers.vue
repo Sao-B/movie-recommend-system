@@ -21,10 +21,10 @@
       <el-table :data="users" v-loading="loading" border stripe>
         <el-table-column prop="id" label="ID" width="80" />
         <el-table-column prop="username" label="用户名" width="200" />
-        <el-table-column prop="is_admin" label="管理员" width="100">
+        <el-table-column prop="role" label="角色" width="100">
           <template #default="{ row }">
-            <el-tag :type="row.is_admin ? 'success' : 'info'">
-              {{ row.is_admin ? '是' : '否' }}
+            <el-tag :type="row.role === 'admin' ? 'danger' : 'info'">
+              {{ row.role === 'admin' ? '管理员' : '普通用户' }}
             </el-tag>
           </template>
         </el-table-column>
@@ -69,8 +69,11 @@
         <el-form-item label="新密码" prop="password" v-if="isEdit">
           <el-input v-model="form.password" type="password" show-password placeholder="留空则不修改" />
         </el-form-item>
-        <el-form-item label="管理员">
-          <el-switch v-model="form.is_admin" />
+        <el-form-item label="角色" prop="role">
+          <el-select v-model="form.role" placeholder="请选择角色">
+            <el-option label="普通用户" value="user" />
+            <el-option label="管理员" value="admin" />
+          </el-select>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -106,7 +109,7 @@ const form = reactive({
   id: null,
   username: '',
   password: '',
-  is_admin: false
+  role: 'user'
 })
 
 const rules = {
@@ -117,6 +120,9 @@ const rules = {
   password: [
     { required: true, message: '请输入密码', trigger: 'blur' },
     { min: 6, message: '密码至少 6 个字符', trigger: 'blur' }
+  ],
+  role: [
+    { required: true, message: '请选择角色', trigger: 'change' }
   ]
 }
 
@@ -125,8 +131,10 @@ const loadUsers = async () => {
   try {
     const params = {
       page: pagination.page,
-      page_size: pagination.page_size,
-      ...searchForm
+      per_page: pagination.page_size
+    }
+    if (searchForm.username) {
+      params.q = searchForm.username
     }
     const data = await apiAdmin.listUsers(params)
     users.value = data.users
@@ -156,7 +164,7 @@ const showCreateDialog = () => {
     id: null,
     username: '',
     password: '',
-    is_admin: false
+    role: 'user'
   })
   dialogVisible.value = true
 }
@@ -168,7 +176,7 @@ const showEditDialog = (row) => {
     id: row.id,
     username: row.username,
     password: '',
-    is_admin: row.is_admin
+    role: row.role
   })
   dialogVisible.value = true
 }
@@ -181,7 +189,10 @@ const handleSubmit = async () => {
 
     try {
       if (isEdit.value) {
-        const updateData = { is_admin: form.is_admin }
+        const updateData = {
+          username: form.username,
+          role: form.role
+        }
         if (form.password) {
           updateData.password = form.password
         }
@@ -191,7 +202,7 @@ const handleSubmit = async () => {
         await apiAdmin.createUser({
           username: form.username,
           password: form.password,
-          is_admin: form.is_admin
+          role: form.role
         })
         ElMessage.success('创建用户成功')
       }

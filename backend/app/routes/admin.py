@@ -221,7 +221,14 @@ def list_ratings():
     user_id = request.args.get("user_id", type=int)
     movie_id = request.args.get("movie_id", type=int)
 
-    query = Rating.query
+    # 使用 join 避免 N+1 查询
+    query = db.session.query(
+        Rating,
+        User.username,
+        Movie.title
+    ).join(User, Rating.user_id == User.id)\
+     .join(Movie, Rating.movie_id == Movie.movie_id)
+
     if user_id:
         query = query.filter(Rating.user_id == user_id)
     if movie_id:
@@ -232,11 +239,10 @@ def list_ratings():
     )
 
     items = []
-    for rating in pagination.items:
+    for rating, username, movie_title in pagination.items:
         item = rating.to_dict()
-        user = db.session.get(User, rating.user_id)
-        item["username"] = user.username if user else None
-        item["movie_title"] = rating.movie.title if rating.movie else None
+        item["username"] = username
+        item["movie_title"] = movie_title
         items.append(item)
 
     return jsonify({
@@ -289,13 +295,17 @@ def activate_model(version):
     if not model:
         return jsonify({"msg": "模型不存在"}), 404
 
-    ModelVersion.query.filter_by(status='active').update({"status": "retired"})
+    try:
+        # 使用显式事务确保原子性
+        ModelVersion.query.filter_by(status='active').update({"status": "retired"})
+        model.status = 'active'
+        model.activated_at = func.now()
+        db.session.commit()
 
-    model.status = 'active'
-    model.activated_at = func.now()
-    db.session.commit()
-
-    return jsonify({"msg": "模型已激活", "version": version})
+        return jsonify({"msg": "模型已激活", "version": version})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "激活失败"}), 500
 
 
 @admin_bp.delete("/models/<string:version>")

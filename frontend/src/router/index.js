@@ -61,13 +61,18 @@ const router = createRouter({
 
 router.beforeEach((to) => {
   const auth = useAuthStore()
+
+  // 检查需要登录的路由
   if (to.meta.requiresAuth && !auth.isLoggedIn) {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
+
+  // 检查需要管理员权限的路由（静默重定向，不显示错误提示）
   if (to.meta.requiresAdmin && !auth.isAdmin) {
-    ElMessage.error('需要管理员权限')
     return { name: 'home' }
   }
+
+  // 已登录用户访问登录/注册页面，重定向到首页
   if ((to.name === 'login' || to.name === 'register') && auth.isLoggedIn) {
     return { name: 'home' }
   }
