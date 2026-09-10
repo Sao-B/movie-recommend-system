@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy.exc import IntegrityError
+from datetime import datetime, timezone
 from ..db import db
 from ..models import Rating, Movie
 
@@ -38,6 +39,7 @@ def submit_rating():
 
     if existing:
         existing.rating = rating
+        existing.rated_at = datetime.now(timezone.utc)
         status_code = 200
     else:
         existing = Rating(

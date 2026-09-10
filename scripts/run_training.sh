@@ -14,4 +14,4 @@ spark-submit \
   --executor-memory 4g \
   "${SPARK_DIR}/train_als.py"
 
-echo "==> 训练完成，推荐结果已写入 MySQL recommendations 表"
+echo "==> 训练完成，active 模型、电影因子和系统用户批量推荐已发布"

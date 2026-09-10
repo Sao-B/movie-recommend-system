@@ -13,6 +13,7 @@ def _load():
 _cfg = _load()
 _mysql = _cfg["mysql"]
 _flask = _cfg["flask"]
+_als = _cfg["als"]
 
 
 class Config:
@@ -35,3 +36,8 @@ class Config:
     FLASK_HOST = _flask["host"]
     FLASK_PORT = int(_flask["port"])
     FLASK_DEBUG = bool(_flask["debug"])
+
+    # ALS / online recommendation
+    ALS_TOP_N = int(_als.get("top_n", 20))
+    ALS_REG_PARAM = float(_als.get("reg_param", 0.1))
+    ALS_NONNEGATIVE = True

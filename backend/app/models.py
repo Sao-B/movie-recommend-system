@@ -14,8 +14,8 @@ class User(db.Model):
     id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
     username      = db.Column(db.String(50), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    role          = db.Column(db.Enum('user', 'admin'), nullable=False, default='user', server_default='user')
     created_at    = db.Column(db.DateTime, default=_utcnow)
+    role          = db.Column(db.String(16), nullable=False, default='user', server_default='user')
 
     def set_password(self, password: str):
         self.password_hash = generate_password_hash(password)

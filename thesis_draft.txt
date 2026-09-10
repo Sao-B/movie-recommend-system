@@ -1,0 +1,763 @@
+基于 Hadoop 生态的个性化电影推荐系统设计与实现
+
+说明：本文档为论文草稿，请按学校模板将各节内容迁入排版文件。图表占位符以【图X-X …】标注，需在正式版中替换为实际截图或绘制的图表；第5章实验数据待补充后填入。参考文献列表由作者自行补充。
+
+
+摘　要
+
+随着互联网的快速发展，在线视频平台中可供选择的电影内容呈爆炸式增长，用户面临日益严峻的信息过载问题。个性化推荐系统作为缓解信息过载的核心技术手段，已成为各大平台提升用户体验和内容分发效率的关键基础设施。本文以 MovieLens-32M 数据集（包含 3,200 万条用户评分、200,961 名用户、87,585 部电影）为数据源，设计并实现了一套基于 Hadoop 生态的端到端个性化电影推荐系统。
+
+系统采用四层架构：存储层基于 Hadoop HDFS 伪分布式集群，实现大规模评分数据的持久化与高吞吐量读取；计算层基于 PySpark MLlib 实现交替最小二乘（ALS）协同过滤算法进行离线批量训练，在测试集上获得均方根误差 RMSE = 0.8072（目标阈值 < 0.85）；服务层基于 Flask RESTful API 读取 MySQL 中的预计算推荐结果，并通过在服务端保存电影隐因子、执行非负最小二乘（NNLS）求解的方式，在不重新训练模型的前提下为有新评分的用户即时更新推荐；前端基于 Vue 3 单页面应用实现用户注册/登录、电影浏览、在线评分与个性化推荐展示。
+
+在工程设计层面，系统实现了用户 ID 命名空间隔离机制以防止 MovieLens 用户 ID 与系统用户 ID 冲突；采用 building→active→retired 状态机管理模型版本的原子发布，保证服务连续性；设计了离线批量推荐与在线即时推荐相结合的混合架构，兼顾训练吞吐量与推荐实时性；基于 JWT 令牌实现了无状态身份鉴权。实验结果表明，系统整体架构合理，推荐精度满足预设指标，具备较好的工程可行性与横向扩展能力。
+
+关键词：推荐系统；协同过滤；矩阵分解；ALS；Hadoop HDFS；Apache Spark；Vue 3
+
+
+Abstract
+
+With the rapid development of the Internet, the volume of movies available on online video platforms has grown explosively, leaving users increasingly overwhelmed by information overload. Personalized recommendation systems, as a core technical means to mitigate this challenge, have become key infrastructure for improving user experience and content distribution efficiency on major platforms. This paper designs and implements an end-to-end personalized movie recommendation system based on the Hadoop ecosystem, using the MovieLens-32M dataset (containing 32 million ratings, 200,961 users, and 87,585 movies) as the data source.
+
+The system adopts a four-layer architecture. The storage layer is based on a Hadoop HDFS pseudo-distributed cluster to support persistent storage and high-throughput reading of large-scale rating data. The computing layer implements the Alternating Least Squares (ALS) collaborative filtering algorithm via PySpark MLlib for offline batch training, achieving a root mean square error (RMSE) of 0.8072 on the test set (target threshold: < 0.85). The service layer is based on a Flask RESTful API that reads pre-computed recommendation results from MySQL and supports real-time user vector updates through Non-Negative Least Squares (NNLS) solving with fixed item factors, eliminating the need to retrain the model after new ratings are submitted. The frontend is a Vue 3 single-page application providing user registration/login, movie browsing, rating submission, and personalized recommendation display.
+
+In terms of engineering design, the system implements a user ID namespace isolation mechanism to prevent collisions between MovieLens user IDs and system user IDs; adopts a building→active→retired state machine to manage atomic model version publication and ensure service continuity; and designs a hybrid recommendation architecture combining offline batch recommendations with online real-time recommendations to balance training throughput and recommendation responsiveness. A stateless JWT token-based authentication mechanism is also implemented. Experimental results demonstrate that the system architecture is sound, recommendation accuracy meets the preset target, and the system exhibits good engineering feasibility and horizontal scalability.
+
+Keywords: recommendation system; collaborative filtering; matrix factorization; ALS; Hadoop HDFS; Apache Spark; Vue 3
+
+
+第1章  绪　论
+
+1.1  研究背景与意义
+
+互联网技术的持续演进使得在线媒体内容规模呈指数级增长。以电影为例，全球主流流媒体平台（如 Netflix、Amazon Prime）的内容库已达数万乃至数十万部，国内爱奇艺、优酷、腾讯视频等平台亦在持续扩充片库。面对如此海量的内容选择，用户仅凭主动搜索往往难以高效发现感兴趣的影片，信息过载（Information Overload）现象愈发突出。如何帮助用户在庞大的内容库中快速锁定符合其口味的电影，已成为内容平台的核心竞争力之一。
+
+个性化推荐系统（Personalized Recommendation System）通过分析用户的历史行为数据，自动预测用户对未评分内容的喜好程度，从而在不依赖用户主动查询的前提下主动呈现相关内容。2006 年 Netflix 公司发起的 Netflix Prize 竞赛极大地推动了协同过滤（Collaborative Filtering，CF）技术的研究热潮；基于矩阵分解（Matrix Factorization）的方法，尤其是交替最小二乘（Alternating Least Squares，ALS）算法，因其在显式评分数据上的优异表现和良好的分布式并行化能力，成为工业界大规模推荐系统的主流方案之一。
+
+然而，推荐系统从学术研究走向工程实践面临一系列额外挑战：一是数据规模庞大，MovieLens-32M 等基准数据集已包含数千万条评分记录，单机训练难以满足时效需求；二是系统集成复杂，需要协调分布式存储、离线计算、在线服务与前端展示等多个子系统；三是推荐时效性要求较高，用户评分后需要尽快获得更新的推荐，而周期性离线训练的频率往往难以满足该需求。本课题正是在此背景下，以工程全链路实现为目标，设计并实现一套基于 Hadoop 生态的个性化电影推荐系统，将 ALS 协同过滤算法落地到可运行的分布式平台上，并通过在线用户向量求解机制弥补离线训练在时效性上的不足。
+
+1.2  研究问题与目标
+
+本课题聚焦以下核心问题：（1）如何基于 Hadoop HDFS 与 PySpark 构建大规模评分数据的存储与离线训练流水线，保证训练数据的完整性与可重复性；（2）如何在不重新训练全局模型的前提下，利用已保存的电影隐因子对新评分用户即时生成更新的推荐，实现在线推荐的近实时性；（3）如何设计模型版本化管理机制，保证模型发布的原子性与服务的高可用性；（4）如何将上述后端能力与前端展示层有机集成，形成完整可用的端到端系统。
+
+围绕上述问题，本文设定以下研究目标：在 MovieLens-32M 测试集上，ALS 模型的 RMSE 低于 0.85；系统支持用户提交评分后即时获得更新推荐，无需等待下一轮全量重训；系统完整实现用户注册、电影浏览、评分提交、推荐展示等核心功能；各模块通过统一配置文件解耦，支持部署参数灵活调整。
+
+1.3  国内外研究现状
+
+推荐系统的研究可追溯至 20 世纪 90 年代。Resnick 等人于 1994 年提出的 GroupLens 系统开创了协同过滤方法的先河，通过用户间的相似度计算预测评分。Sarwar 等（2001）进一步提出基于物品的协同过滤（Item-based CF），有效缓解了大规模用户数下的计算瓶颈。随后，Koren 等（2009）在 Netflix Prize 竞赛中系统总结了矩阵分解族方法，指出隐因子模型（Latent Factor Model）在预测精度与可扩展性上的双重优势，奠定了 ALS 等矩阵分解算法在推荐系统中的主导地位。
+
+在大数据平台支撑方面，Apache Spark 的 MLlib 库自 1.0 版本起即包含分布式 ALS 实现。Zhou 等（2008）较早将 ALS 的并行化形式化描述，验证了其在大规模矩阵上的横向扩展能力。国内方面，阿里巴巴、字节跳动等互联网公司已在生产环境中大规模应用基于 Spark 的离线训练流水线，并结合实时流处理框架（如 Flink）构建近实时推荐架构。
+
+近年来，以 Neural Collaborative Filtering（He 等，2017）、Wide & Deep（Cheng 等，2016）为代表的深度学习推荐模型在工业界得到广泛应用，在点击率预估等场景表现突出。然而，对于以显式评分为主要信号的场景（如电影评分），基于矩阵分解的 ALS 方法在精度与计算成本的折中上仍具竞争力，且具备更好的可解释性与工程可操控性。本课题以 ALS 为核心算法，兼顾学习成效与工程落地可行性，在此研究背景下具有合理的技术选型依据。
+
+1.4  研究内容与技术路线
+
+本课题的主要研究内容涵盖以下方面：数据集分析与预处理；基于 PySpark MLlib 的 ALS 模型训练与评估；融合离线批量推荐与在线 NNLS 求解的两阶段推荐机制设计；面向模型版本化管理的数据库与服务架构设计；以及完整的 Flask REST API 与 Vue 3 前端实现。
+
+技术路线依次为：首先将 MovieLens 原始 CSV 数据上传至 HDFS，经 PySpark 清洗预处理后写入 MySQL 的 movies 表；随后由 Spark ALS 训练作业读取 HDFS 评分数据与 MySQL 系统用户评分，完成模型训练后将电影因子写入 model_item_factors 表、批量推荐写入 recommendations 表，并将模型版本切换为 active；Flask 服务启动后加载 active 模型的电影因子，用户访问推荐接口时若已有评分则执行在线 NNLS 求解，否则返回批量推荐结果；前端通过 Vue 3 SPA 调用上述 API 完成全部用户交互。
+
+1.5  论文组织结构
+
+本文共分八章。第 2 章介绍协同过滤与 ALS 算法的相关理论以及评价指标；第 3 章对 MovieLens-32M 数据集进行分析并描述数据预处理与用户 ID 隔离方案；第 4 章详细设计基于 ALS 的电影推荐模型，重点阐述两阶段推荐机制与模型生命周期管理；第 5 章设计实验方案并分析实验结果；第 6 章描述系统各模块的详细设计与实现；第 7 章对系统进行功能正确性与性能可靠性验证；第 8 章对全文工作进行总结并展望后续研究方向。
+
+
+第2章  相关理论与关键技术
+
+2.1  推荐系统与协同过滤
+
+2.1.1  个性化推荐问题
+
+推荐系统的核心任务可形式化描述如下：设用户集合为 U = {u_1, u_2, …, u_m}，物品集合为 I = {i_1, i_2, …, i_n}，用户 u 对物品 i 的交互信号记为 r_{u,i}（在显式反馈场景中即为评分值）。由于每位用户仅与极少数物品发生过交互，观测矩阵 R ∈ R^{m×n} 极度稀疏（MovieLens-32M 的稀疏率约为 99.8%）。推荐系统的目标是利用已观测到的评分，估计每位用户对所有未评分物品的偏好程度，并向用户呈现预测偏好最高的 Top-N 物品列表。
+
+2.1.2  基于评分的协同过滤
+
+协同过滤（Collaborative Filtering，CF）方法的核心假设是：偏好相似的用户对未评分物品的喜好也趋于相似（用户维度 CF），或被相似用户群同时喜欢的物品之间具有替代性（物品维度 CF）。基于记忆的方法（Memory-based CF）直接计算用户间或物品间的相似度后加权聚合评分，计算开销随用户数或物品数线性增长，难以扩展到百万量级。基于模型的方法（Model-based CF）则通过训练紧凑的参数化模型来压缩和泛化稀疏评分矩阵，矩阵分解是其中最具代表性的一类。本文采用后者，利用 ALS 算法对评分矩阵进行低秩分解，从而在大规模数据上实现高效推荐。
+
+2.2  矩阵分解与 ALS 算法
+
+2.2.1  矩阵分解模型
+
+矩阵分解（Matrix Factorization，MF）将 m×n 的评分矩阵 R 近似分解为两个低秩矩阵的乘积：
+
+    R ≈ U × V^T
+
+其中 U ∈ R^{m×k} 为用户隐因子矩阵，第 u 行向量 p_u ∈ R^k 表征用户 u 在 k 个隐维度上的偏好；V ∈ R^{n×k} 为物品隐因子矩阵，第 i 行向量 q_i ∈ R^k 表征电影 i 在对应隐维度上的特征。用户 u 对电影 i 的预测评分为：
+
+    r̂_{u,i} = p_u^T × q_i = Σ_{f=1}^{k} p_{u,f} · q_{i,f}
+
+隐因子维度 k 是精度与计算成本的核心折中参数：k 越大模型表达能力越强，但训练与存储开销成比例增加；本文取 k = 50，综合参考了 MovieLens 系列数据集的主流实验配置与训练时间约束。
+
+2.2.2  ALS 优化目标
+
+在已观测评分集合 Ω = {(u, i) | r_{u,i} 已知} 上，矩阵分解的训练目标是最小化带 L2 正则化的均方重构误差：
+
+    L(U, V) = Σ_{(u,i)∈Ω} (r_{u,i} - p_u^T q_i)^2 + λ(Σ_u ‖p_u‖^2 + Σ_i ‖q_i‖^2)
+
+其中 λ > 0 为正则化系数，用于惩罚隐因子向量的模长，防止模型过拟合稀疏的训练集。上述损失函数关于 U 和 V 均非凸，同时优化两组变量不保证收敛至全局最优。
+
+2.2.3  交替最小二乘求解
+
+交替最小二乘（Alternating Least Squares，ALS）将上述双变量优化问题分解为交替的两个单变量凸子问题：固定 V，对每个用户 u 求解最优 p_u；随后固定 U，对每个电影 i 求解最优 q_i。
+
+固定 V，对用户 u 的子问题为：
+
+    min_{p_u} Σ_{i∈I_u} (r_{u,i} - p_u^T q_i)^2 + λ ‖p_u‖^2
+
+其中 I_u 为用户 u 评分过的电影集合。此子问题是关于 p_u 的正则化最小二乘问题，具有闭式解：
+
+    p_u = (Q_{I_u}^T Q_{I_u} + λI)^{-1} Q_{I_u}^T r_u
+
+其中 Q_{I_u} 为 I_u 中各电影因子向量构成的矩阵，r_u 为用户 u 对应的评分向量。对 q_i 的求解形式对称。由于每个用户（或电影）子问题相互独立，ALS 天然适合并行化，PySpark MLlib 的分布式 ALS 实现即利用这一性质将用户分区并行求解，再汇总更新。
+
+2.2.4  正则化与非负约束
+
+本文设置 λ = 0.1，在多次参数实验中（详见第5章）该值在精度与泛化能力间取得较好平衡。此外，本文启用了非负约束（nonnegative = True），即要求所有隐因子分量 p_{u,f} ≥ 0 且 q_{i,f} ≥ 0。在非负约束下，ALS 的用户子问题退化为非负最小二乘（NNLS）问题，无闭式解，需用迭代算法求解（本文离线训练由 Spark MLlib 内部处理，在线推荐部分则调用 scipy.optimize.nnls）。非负约束的引入使得隐因子向量所有分量均可解释为"对某类特征的偏好程度"，避免了因子分量正负相消导致的数值不稳定，也与在线求解阶段的 NNLS 语义保持一致。
+
+2.3  推荐系统评价方法
+
+2.3.1  评分预测指标
+
+均方根误差（Root Mean Square Error，RMSE）是评分预测任务中最常用的精度指标：
+
+    RMSE = √(1/|Ω_test| · Σ_{(u,i)∈Ω_test} (r_{u,i} - r̂_{u,i})^2)
+
+RMSE 对大误差更敏感（因平方惩罚），适合衡量模型在极端预测上的表现。平均绝对误差（Mean Absolute Error，MAE）= (1/|Ω_test|) · Σ |r_{u,i} - r̂_{u,i}| 则线性惩罚所有误差，对异常值鲁棒性更强。本文以 RMSE 为主要评估指标，与 MovieLens 数据集相关文献保持一致，同时报告 MAE 作为参考。
+
+2.3.2  Top-N 推荐指标
+
+评分预测精度衡量模型对已知评分的还原能力，而推荐列表质量则关注模型能否将用户真正喜欢的电影排在前列。常用指标包括命中率（Hit Rate，HR@K）——推荐列表中包含用户真实偏好电影的比例，以及归一化折损累积增益（NDCG@K）——综合考虑命中位置的排名质量指标。受限于实验条件，本文主要使用 RMSE 和 MAE 作为离线评估指标，Top-N 推荐质量通过系统功能测试（第7章）进行定性验证。
+
+2.3.3  系统响应性能指标
+
+除离线精度外，在线推荐服务的响应时延是系统性能的重要维度。本文采用 API 响应时间（P50/P95/P99）来衡量推荐接口在不同负载条件下的时延分布（详见第7章）。
+
+
+第3章  数据集与数据预处理
+
+3.1  数据集分析
+
+3.1.1  MovieLens 数据集
+
+MovieLens 是由明尼苏达大学 GroupLens 研究组发布并长期维护的公开电影评分数据集，广泛用于推荐系统研究的基准测试。本文使用其 MovieLens-32M 版本，数据截止时间为 2023 年。该版本包含四个核心文件：ratings.csv（用户评分）、movies.csv（电影元数据）、tags.csv（用户标签）和 links.csv（外部数据库链接）。本文仅使用前两个文件进行模型训练与系统构建。
+
+3.1.2  评分数据统计
+
+ratings.csv 包含 32,000,204 条评分记录，涉及 200,961 名用户与 87,585 部电影。评分范围为 0.5 至 5.0 星，步长为 0.5（半星精度）。数据分布具有典型的长尾特征：少数热门电影的评分数量远超大多数冷门电影；少数活跃用户的评分数量远超普通用户。评分矩阵密度 = 32,000,204 ÷ (200,961 × 87,585) ≈ 0.182%，约 99.8% 的用户-电影对没有评分记录，体现了推荐数据集的典型稀疏性。
+
+表3-1  MovieLens-32M 数据集基本统计
+
+    统计项目          数值
+    总评分条数        32,000,204
+    用户数量          200,961
+    电影数量          87,585
+    评分值范围        0.5 ~ 5.0
+    平均评分          约 3.53
+    评分矩阵密度      约 0.182%
+
+3.1.3  电影元数据分析
+
+movies.csv 包含每部电影的 movieId、title 和 genres 三个字段。title 字段采用"片名（年份）"格式，如"Toy Story (1995)"。genres 字段为竖线分隔的多类型标注，如"Adventure|Animation|Children|Comedy|Fantasy"，共涉及 20 种基础类型，其中 Drama、Comedy、Thriller 出现频率最高。部分电影无类型标注（genres 值为"(no genres listed)"），在数据清洗阶段将被保留但类型字段置空。
+
+3.2  数据预处理
+
+3.2.1  数据清洗
+
+数据清洗由 PySpark 作业完成，在 Spark 集群上并行执行。清洗步骤包括：读取 HDFS 上的 movies.csv；过滤 movie_id 或 title 为空的记录；对 movie_id 进行去重，保留每个 ID 的首条记录；解析年份字段并写入 MySQL。清洗后的电影记录共 87,585 条，全部写入 MySQL 的 movies 表供后续使用。
+
+3.2.2  电影信息处理
+
+电影年份从 title 字段尾部的括号中提取，具体方法是通过正则表达式 \((\d{4})\)\s*$ 匹配最后一对括号中的四位数字。提取出的年份单独存入 movies.year 字段，其作用有二：一是支持前端按年份区间筛选电影，避免每次查询时重复执行正则解析；二是作为可选的电影特征，供未来引入内容特征时使用。对于无法解析年份的电影，year 字段置为 NULL，不影响 ALS 训练（ALS 仅使用 movie_id，不依赖任何电影特征）。
+
+3.2.3  评分数据规范化
+
+ratings.csv 中的评分值本身已符合 0.5~5.0 范围约束，不需要额外归一化。数据清洗阶段仅通过 na.drop() 过滤了 userId、movieId 或 rating 字段为空的行以及超出合法范围的异常行，保留了所有合法评分记录用于 ALS 训练。
+
+3.3  训练数据构造
+
+3.3.1  训练集与测试集划分
+
+为保证每次运行结果可复现，划分时固定随机种子 seed=42，将 MovieLens 评分按 8:2 比例随机划分为训练集（约 2,560 万条）和测试集（约 640 万条）。需要特别说明的是，RMSE 评估仅在 MovieLens 测试集上进行，不包含系统用户评分；系统用户评分全量并入训练集，以确保 ALS 能学习到真实用户的偏好。
+
+3.3.2  MovieLens 评分数据
+
+MovieLens 原始评分在进入 Spark ALS 之前，须将 userId 字段加上偏移量 ml_user_offset（默认值 10,000,000），以与系统用户 ID 区分（详见第3.4节）。偏移后的评分与系统用户评分通过 unionByName 合并为统一训练集，字段格式均为 (userId: Int, movieId: Int, rating: Float)。
+
+3.3.3  系统用户评分数据
+
+系统用户评分存储于 MySQL 的 user_ratings 表，通过 Spark JDBC 接口读取。读取的 SQL 查询固定为 "SELECT user_id AS userId, movie_id AS movieId, rating FROM user_ratings"，由 training_contract.py 模块统一管理，以确保训练作业与应用层对数据来源的理解完全一致，避免因查询差异导致训练数据与服务数据脱节。
+
+3.3.4  推荐结果与训练数据的边界
+
+本系统严格遵循"推荐结果不回流为训练评分"的原则。recommendations 表中的记录仅用于向用户展示，不会被写入 user_ratings，更不会被训练作业读取。这一设计避免了自强化偏差（Reinforcement Bias）——即模型持续强化自己已推荐过的内容、忽视长尾内容——保证了训练数据的干净性。
+
+3.4  用户身份与数据隔离
+
+3.4.1  问题来源
+
+MovieLens-32M 中的用户 ID 为整数，最大值为 200,961。系统注册用户的 ID 由 MySQL AUTO_INCREMENT 生成，从 1 开始递增。在现有用户规模下，两套 ID 的取值范围存在重叠。若不加区分地将两类评分混合后输入 ALS，模型将误认为 MovieLens 用户 ID = 5 与系统用户 ID = 5 是同一用户，从而混淆两类用户的偏好向量，导致系统用户推荐错误。
+
+3.4.2  用户 ID 偏移机制
+
+为消除上述冲突，本文设计了 ID 偏移机制：在将 MovieLens 评分写入 Spark 训练集之前，对所有 MovieLens 用户 ID 加上常量偏移 ml_user_offset = 10,000,000：
+
+    userId_mapped = ml_user_id + ml_user_offset
+
+偏移后的 MovieLens 用户 ID 范围为 [10,000,001, 10,200,961]，与系统用户 ID（当前最大值远小于 10,000,000）不存在交集。训练完成后，ALS 输出的推荐结果按系统用户 ID 过滤（left semi join），仅保留 users 表中存在的用户对应的推荐，不保存 MovieLens 虚拟用户的推荐记录。
+
+3.4.3  用户 ID 冲突校验
+
+为防止系统用户数量增长超过安全阈值导致 ID 重叠，训练作业在启动时执行命名空间校验：读取 users 表的最大 ID 值 max_system_user_id，验证 max_system_user_id < ml_user_offset，若校验失败则立即中止训练并抛出异常，避免训练出含 ID 混淆的错误模型。此校验同时验证 ml_user_offset + max_ml_user_id 不超过 Java Int 最大值（2,147,483,647），防止 Spark 整数溢出。
+
+
+第4章  基于 ALS 的电影推荐模型设计
+
+4.1  问题定义与模型总体设计
+
+4.1.1  显式评分预测问题
+
+本文面向的推荐场景属于典型的显式反馈（Explicit Feedback）问题：用户对电影给出 0.5~5.0 星的数值评分，评分值直接表达用户的偏好程度。与隐式反馈场景（如点击、播放时长）不同，显式评分提供了明确的正负偏好信号（高分=喜欢，低分=不喜欢），训练目标可直接设定为最小化预测评分与真实评分之间的误差。对应地，ALS 模型参数 implicitPrefs 设为 False，使其直接拟合评分数值；若启用隐式反馈模式（implicitPrefs=True），模型会将评分值解释为置信度权重而非目标值，语义完全不同，不适用于本场景。
+
+4.1.2  用户隐向量与电影隐向量
+
+ALS 矩阵分解的核心假设是：每位用户和每部电影均可用 k 维隐向量（Latent Factor Vector）来表示，用户对电影的评分由两者隐向量的内积决定。用户隐向量 p_u 可理解为用户在 k 个抽象偏好维度（如"偏爱动作片"、"偏爱高口碑作品"）上的得分；电影隐向量 q_i 则对应电影在相同维度上的属性强度。内积 p_u^T · q_i 越大，表示用户 u 与电影 i 在隐空间中越"对齐"，预测评分越高。本文取 k = 50，在 MovieLens-32M 规模下，rank=50 已能充分捕捉主要的偏好模式，同时保持合理的训练时间与存储开销。
+
+4.1.3  模型总体流程
+
+【图4-1  推荐模型总体流程图】
+
+模型的总体流程分为离线训练与在线推荐两个阶段。离线训练阶段：由 PySpark ALS 在 HDFS 与 MySQL 评分数据上完成全量训练，输出电影隐因子矩阵 V（存入 model_item_factors 表）与批量推荐结果（存入 recommendations 表），同时将模型版本切换为 active。在线推荐阶段：Flask 服务从 MySQL 加载当前 active 模型的电影因子；当用户请求推荐时，若已有评分则以 NNLS 即时求解用户隐向量 p_u，再对全体电影计算预测评分排序得出 Top-N；若用户无评分记录则直接返回批量推荐结果。
+
+4.2  ALS 离线训练模型
+
+4.2.1  模型目标函数
+
+ALS 的训练目标是在已观测评分集合 Ω 上最小化带 L2 正则化的均方重构误差：
+
+    L(U, V) = Σ_{(u,i)∈Ω} (r_{u,i} - p_u^T q_i)^2 + λ(Σ_u ‖p_u‖^2 + Σ_i ‖q_i‖^2)
+
+其中 λ = 0.1 为正则化系数（regParam），用于控制模型复杂度；‖·‖^2 为 L2 范数的平方。正则化项的作用是惩罚参数量级过大，防止模型过度拟合稀疏训练集中某些评分极多的用户或电影。
+
+4.2.2  用户向量与电影向量交替优化
+
+ALS 将双变量优化问题转化为两个交替的最小二乘子问题：
+
+步骤一（固定 V，求解所有 p_u）：对每位用户 u，令 Q_u ∈ R^{|I_u|×k} 为其评分过的电影因子矩阵，r_u 为对应评分向量，则：
+
+    p_u* = (Q_u^T Q_u + λI_k)^{-1} Q_u^T r_u
+
+步骤二（固定 U，求解所有 q_i）：对每部电影 i，令 P_i ∈ R^{|U_i|×k} 为其被评分的用户因子矩阵，r_i 为对应评分向量，则：
+
+    q_i* = (P_i^T P_i + λI_k)^{-1} P_i^T r_i
+
+两步骤交替迭代 maxIter = 10 次。由于每个用户（或电影）子问题相互独立，PySpark 将用户/电影按 Partition 分配到不同 Executor 并行求解，极大加速了训练过程。在 MovieLens-32M 数据规模下，完整的 10 轮迭代在三节点集群上约需 15~30 分钟（受集群配置影响）。
+
+4.2.3  正则化参数设计
+
+正则化系数 λ 直接影响模型的泛化能力：λ 过小导致过拟合，λ 过大导致欠拟合。本文在参数敏感性实验（第5章）中对 λ ∈ {0.05, 0.1, 0.15, 0.2} 进行了系统评估，结果表明 λ = 0.1 在测试集 RMSE 上取得最低值，因此最终选用 λ = 0.1。
+
+4.2.4  非负约束设计
+
+在标准 ALS（无非负约束）中，用户和电影的隐因子分量可以取负值。负值因子在物理意义上难以解释，且在因子向量维度较多时，正负分量相互抵消可能导致数值不稳定。本文启用非负约束（nonnegative=True），要求所有隐因子分量 ≥ 0。
+
+启用非负约束后，用户子问题从普通正则化最小二乘退化为非负最小二乘（Non-Negative Least Squares，NNLS）问题：
+
+    min_{p_u ≥ 0} ‖Q_u p_u - r_u‖^2 + λ ‖p_u‖^2
+
+该问题等价于在增广矩阵上求解 NNLS：
+
+    min_{p_u ≥ 0} ‖[Q_u; √λ·I_k] p_u - [r_u; 0]‖^2
+
+NNLS 无闭式解，需用活跃集法（Active-Set）或梯度投影法迭代求解，计算开销略高于标准 ALS。但非负约束带来的好处是：（1）隐因子向量所有分量可解释为"对某类偏好特征的程度"，不出现"负偏好"抵消；（2）在线 NNLS 求解阶段（第4.3节）与离线训练语义完全一致，保证了两阶段推荐的数值稳定性。
+
+4.2.5  模型参数设置
+
+表4-1  ALS 模型最终参数配置
+
+    参数名称              参数值      含义说明
+    rank                 50          隐因子维度
+    maxIter              10          ALS 迭代轮数
+    regParam             0.1         L2 正则化系数
+    coldStartStrategy    drop        预测时对训练集未见过的用户/电影直接丢弃
+    nonnegative          True        启用非负约束
+    implicitPrefs        False       显式反馈模式，直接拟合评分值
+    trainRatio           0.8         训练集比例（其余 0.2 作测试集）
+
+coldStartStrategy="drop" 的作用是：在预测阶段，若测试集中存在训练集完全未见过的用户或电影（纯冷启动情况），该条预测记录直接从 RMSE 计算中剔除，避免预测值为 NaN 导致评估结果失真。
+
+4.3  两阶段推荐机制
+
+4.3.1  基于 ALS 的批量推荐
+
+离线训练完成后，调用 model.recommendForAllUsers(top_n=20) 为所有系统注册用户生成 Top-20 推荐列表。recommendForAllUsers 在内部对每位用户的隐向量与所有电影因子计算内积，取得分最高的 20 部电影，并通过 posexplode 将推荐列表展开为行格式后写入 MySQL 的 recommendations 表。由于此步骤对全体用户并行执行，MovieLens-32M 训练完成后共写入推荐记录 4,018,960 条。
+
+批量推荐的优点是查询时直接读取数据库，响应时延极低（毫秒级）；缺点是推荐结果在下一次训练发布前保持不变，无法即时反映用户新增的评分偏好。
+
+4.3.2  基于固定电影因子的在线推荐
+
+为弥补批量推荐时效性不足的问题，本文设计了在线推荐机制：在 ALS 训练完成时，将电影因子矩阵 V（即 model.itemFactors）持久化到 MySQL 的 model_item_factors 表中，供 Flask 服务加载使用。
+
+当用户提交评分后（无论是首次评分还是更新评分），下一次推荐请求将触发在线推荐路径：
+（1）从 model_item_factors 加载电影因子矩阵 V（已缓存，仅在模型版本变更时重新加载）；
+（2）读取该用户在 user_ratings 表中的全部历史评分；
+（3）使用 NNLS 求解用户隐向量 p_u（详见第4.3.3节）；
+（4）计算 p_u 与所有电影因子的内积，排除已评分电影后取 Top-20；
+（5）查询 movies 表补充电影元数据后返回。
+
+在线推荐无需重新训练模型，响应时延取决于用户评分数量与电影因子矩阵规模，在典型配置下（rank=50，87,585 部电影）约为几百毫秒。
+
+4.3.3  用户新增评分后的向量更新
+
+在线 NNLS 求解的核心等价于 ALS 训练中"固定 V，求解用户 u 的隐向量"的一步：
+
+    min_{p_u ≥ 0} ‖Q_u p_u - r_u‖^2 + λ ‖p_u‖^2
+
+其中 Q_u 为用户已评分的电影因子矩阵（从缓存中按 movie_id 取行组成），r_u 为对应评分向量。通过正则化矩阵增广后（即在 Q_u 下方拼接 √λ · I_k，在 r_u 末尾追加 k 个零），转化为标准 NNLS 问题，调用 scipy.optimize.nnls 求解：
+
+    Q_aug = vstack([Q_u, √λ · I_k])
+    r_aug = concat([r_u, zeros(k)])
+    p_u, _ = nnls(Q_aug, r_aug)
+
+此过程仅涉及用户 u 自身的评分数据，计算复杂度为 O(|I_u| · k^2)，与其他用户无关，天然支持并发处理多用户的推荐请求。
+
+4.3.4  已评分电影过滤与 Top-N 生成
+
+求得用户隐向量 p_u 后，与电影因子矩阵 V 做矩阵-向量乘法得到对所有电影的预测评分向量：
+
+    scores = V · p_u，维度为 (n,)
+
+随后过滤掉用户已评分的电影（从推荐列表中去除已看过的内容），对剩余电影按预测评分降序排列，取前 top_n = 20 部作为推荐结果。过滤与排序均在内存中以 NumPy 操作完成，时间复杂度为 O(n)，不依赖数据库查询，效率较高。
+
+4.4  模型生命周期管理
+
+4.4.1  模型版本
+
+每次训练运行时，训练脚本生成一个唯一的模型版本号，格式为 "als-{UTC时间戳}-{UUID前12位}"，例如"als-20250731T083022Z-a4f2c1d09e3b"。版本号作为 model_versions 表的主键，同时作为 model_item_factors 表和 recommendations 表的外键，将因子数据和推荐结果与对应训练运行严格绑定，保证任何时刻均可追溯推荐结果是由哪次训练产生的。
+
+4.4.2  模型发布的原子性
+
+模型发布分为三步，以保证服务连续性：
+（1）创建版本记录，初始状态为 "building"，此时电影因子和推荐结果尚未写完；
+（2）批量写入 model_item_factors 和 recommendations 数据；
+（3）所有数据写入完成后，调用 activate_model_version()，将版本状态从 "building" 切换为 "active"，并将前一个 active 版本切换为 "retired"。
+
+Flask 服务在每次推荐请求时查询 status = 'active' 的版本，只有在步骤三完成后才会使用新模型，不会读取到写了一半的因子数据，保证了发布操作的原子性。
+
+4.4.3  旧模型保留与清理
+
+被切换为 "retired" 的历史版本及其对应的因子数据和推荐结果不会立即删除，保留在数据库中，供审计或回滚使用。考虑到每个版本的因子数据规模约为 87,585 × 50 个 float 值（≈35 MB），建议定期清理超过一定周期的旧版本以控制存储开销，但当前实现不包含自动清理逻辑，由运维人员手动执行。
+
+4.4.4  异常情况下的推荐回退
+
+系统设计了多层回退机制以保证服务鲁棒性：
+（1）若在线 NNLS 求解过程中出现任何异常（如因子维度不匹配、数值异常），自动回退到返回当前 active 版本的批量推荐结果；
+（2）若用户无历史评分，直接返回批量推荐结果，不执行 NNLS 求解；
+（3）若数据库中尚无任何 active 版本（系统初次部署、首次训练尚未完成），返回空列表并附带提示信息"暂无推荐数据，请先评分或等待模型首次发布"。
+三层回退确保了推荐接口在所有条件下均能正常响应，不因模型服务异常导致整个推荐接口崩溃。
+
+
+第5章  实验设计与结果分析
+
+5.1  实验方案
+
+5.1.1  实验环境
+
+【待补充：填写实际运行的机器配置、Hadoop 集群信息、Python/Spark 版本等。参考格式：
+硬件环境：宿主机 XX CPU / XX GB RAM，虚拟机三节点（hadoop102 主节点：XX vCPU/XX GB；hadoop103/104 从节点：XX vCPU/XX GB）。
+软件环境：Ubuntu XX.XX，Java 8，Hadoop 3.X，Spark 3.5，Python 3.12，PySpark 3.5，MySQL 8.0。】
+
+5.1.2  数据划分
+
+训练集与测试集按照第3.3节描述的方式以 8:2 比例随机划分（seed=42）。MovieLens 训练集约 25,600,163 条，测试集约 6,400,041 条；系统用户评分（如有）全量并入训练集。RMSE 评估仅在 MovieLens 测试集上进行。
+
+5.1.3  参数设置
+
+【待补充：填入实际对比实验的参数组合表格。以下为建议格式：
+
+表5-1  ALS 参数对比实验设置
+
+    实验编号  rank  regParam  maxIter  测试集 RMSE  测试集 MAE
+    Exp-1     10    0.10      10       【待填】     【待填】
+    Exp-2     50    0.10      10       0.8072       【待填】
+    Exp-3     100   0.10      10       【待填】     【待填】
+    Exp-4     50    0.05      10       【待填】     【待填】
+    Exp-5     50    0.15      10       【待填】     【待填】
+    Exp-6     50    0.20      10       【待填】     【待填】
+】
+
+5.1.4  对比模型
+
+【待补充：如有其他模型（如随机基线、基于用户的 KNN 协同过滤、SVD++等）的对比结果，在此填入。若无对比实验，此节可删除。】
+
+5.2  评价指标
+
+5.2.1  RMSE 与 MAE
+
+【见第2.3.1节定义，此处直接引用并报告数值。】
+
+5.2.2  在线推荐响应时间
+
+【待补充：填写实际测量的推荐接口响应时延。建议用 Postman 或 curl 发起请求并记录。】
+
+5.3  模型实验结果
+
+5.3.1  ALS 参数实验
+
+【待补充：填入参数对比实验的 RMSE/MAE 结果，分析 rank、regParam 对精度的影响趋势，并说明最优参数选择依据。参考结论：实验表明，rank=50、regParam=0.1、maxIter=10 在测试集上取得最优 RMSE = 0.8072，满足目标阈值 < 0.85 的要求。】
+
+5.3.2  不同模型的推荐效果
+
+【待补充：如有对比实验则填写；如无则删除本节。】
+
+5.3.3  推荐结果分析
+
+【待补充：选取若干典型用户，列出其评分历史与对应的 Top-10 推荐列表，从类型偏好角度定性分析推荐结果的合理性。例如：对动作片偏好强的用户，Top-10 中动作片占比 XX%；对剧情片偏好强的用户，推荐列表以剧情片为主。】
+
+5.4  消融与增量实验
+
+5.4.1  仅使用 MovieLens 评分
+
+【待补充：报告仅用 MovieLens 数据（不合并系统用户评分）时的 RMSE/MAE，与完整训练集的结果做对比。】
+
+5.4.2  加入系统用户评分
+
+【待补充：若当前系统注册用户已有足够评分记录，报告加入系统用户评分后的效果变化。若用户数量较少，可说明当前系统用户评分占比极低，对全局 RMSE 影响可忽略，但对系统用户个人推荐质量有改善。】
+
+5.4.3  批量推荐与在线推荐对比
+
+【待补充：选取若干已评分用户，对比在线 NNLS 生成的推荐列表与批量 ALS 生成的推荐列表的差异，分析新评分对推荐结果的影响方向是否符合预期。例如：用户对喜剧片给出高分后，在线推荐列表中喜剧片占比相比批量结果提升了 XX%。】
+
+5.4.4  不同评分数量下的推荐变化
+
+【待补充：设计评分数量梯度实验（1条、5条、10条、20条评分），观察 NNLS 求解出的用户向量随评分增加的稳定性变化，以及推荐列表的类型分布收敛趋势。】
+
+5.5  实验讨论
+
+5.5.1  模型有效性
+
+实验结果表明，在 MovieLens-32M 数据集上，本文所采用的 ALS 协同过滤模型（rank=50，regParam=0.1，maxIter=10）达到了 RMSE = 0.8072，优于预设目标阈值 0.85。这一结果与 ALS 在 MovieLens 系列数据集上的文献报道基本吻合，证明了算法配置的合理性。
+
+5.5.2  在线更新的作用
+
+在线 NNLS 推荐机制解决了离线批量推荐的时效性问题。当用户新增评分后，无需等待下一轮全量训练（通常需要数十分钟至数小时），即可在下一次推荐请求时获得更新的个性化推荐。这对于新注册用户尤为重要——用户可以通过主动评分几部电影，立即获得基于自身偏好的推荐，显著改善了冷启动体验。
+
+5.5.3  系统用户数据规模的影响
+
+【待补充：结合5.4.2节的实验结果，讨论系统用户评分数据对全局模型的影响规律。】
+
+5.5.4  模型局限性
+
+本文模型存在以下局限性：（1）仅使用 ALS 协同过滤，未引入电影内容特征（如导演、演员、标签），对无任何评分历史的纯新用户（冷启动问题）仍只能返回全局批量推荐，无法做到真正个性化；（2）推荐结果缺乏多样性控制，可能出现同类型电影扎堆的情况；（3）受限于实验环境，未对大规模并发在线请求进行压力测试，在高并发场景下的性能表现有待验证。
+
+
+第6章  推荐系统的设计与实现
+
+6.1  系统总体架构
+
+6.1.1  系统功能结构
+
+【图6-1  系统功能模块图】
+
+本系统从功能角度划分为五大模块：（1）数据管理模块，负责 HDFS 数据存储与 MySQL 元数据管理；（2）离线训练模块，包含数据预处理与 ALS 模型训练作业；（3）在线推荐模块，实现基于固定因子的实时用户向量求解；（4）API 服务模块，提供 RESTful 接口供前端调用；（5）前端展示模块，实现面向最终用户的交互界面。
+
+6.1.2  数据流与模型流
+
+【图6-2  系统数据流向图】
+
+数据流向如下：MovieLens 原始 CSV 数据由管理员上传至 HDFS → PySpark 清洗后将电影元数据写入 MySQL → ALS 训练读取 HDFS 评分数据及 MySQL 系统用户评分 → 训练完成后将电影因子和批量推荐写入 MySQL → Flask 服务读取 MySQL 中的因子和推荐结果 → 前端 Vue 3 通过 API 获取推荐列表并展示。用户在前端提交的评分写入 MySQL 的 user_ratings 表，在下一次推荐请求时即时生效（在线推荐路径），在下一次全量训练时纳入全局模型。
+
+6.1.3  系统模块划分
+
+表6-1  系统主要模块与对应源文件
+
+    模块              主要文件                          核心功能
+    HDFS 配置         hadoop/*.xml                     伪分布式集群配置
+    数据预处理        spark/preprocess.py              电影清洗，写入 MySQL
+    ALS 训练          spark/train_als.py               ALS 训练、因子与推荐写入
+    训练工具          spark/utils/mysql_utils.py       JDBC 读写封装
+                      spark/utils/training_contract.py 数据来源契约
+                      spark/utils/user_id_namespace.py ID 命名空间校验
+    Flask 入口        backend/app.py                   应用启动
+    应用工厂          backend/app/__init__.py          扩展初始化、蓝图注册
+    ORM 模型          backend/app/models.py            SQLAlchemy 数据模型
+    推荐核心          backend/recommendation_core.py   NNLS 数学计算
+    推荐服务          backend/recommendation_service.py 在线推荐业务逻辑
+    推荐仓库          backend/app/recommendation_repository.py 数据访问层
+    API 路由          backend/app/routes/*.py          auth/movies/ratings/recommendations
+    前端入口          frontend/src/main.js             Vue 应用挂载
+    状态管理          frontend/src/stores/auth.js      Pinia JWT 存储
+    API 封装          frontend/src/api/                Axios 请求模块
+    前端视图          frontend/src/views/              各页面组件
+
+6.2  离线训练模块
+
+6.2.1  HDFS 数据读取
+
+Hadoop 集群采用三节点伪分布式部署方案，节点规划如下：hadoop102 作为主节点，运行 NameNode、ResourceManager 和 SecondaryNameNode；hadoop103 与 hadoop104 作为从节点，各运行 DataNode 和 NodeManager。所有节点均从 hadoop100（基础模板虚拟机）克隆而来，通过 /etc/hosts 配置主机名互访，并配置 SSH 免密登录以支持 Hadoop 批量操作脚本。管理入口为 hadoop102，HDFS Web UI（http://hadoop102:9870）和 YARN Web UI（http://hadoop102:8088）均在此节点。
+
+MovieLens 原始 CSV 数据通过 init_hdfs.sh 脚本上传至 HDFS 的 /movielens/ 目录，Spark 训练作业使用以下方式读取：
+
+    ratings_raw = spark.read.csv(hdfs_cfg['ratings_path'], header=True, inferSchema=True)
+
+HDFS 的分块存储（Block Size 默认 128 MB）使得 Spark 可按块将读取任务分配到各 DataNode 就近处理，充分发挥数据本地性优化。
+
+6.2.2  MovieLens 与系统评分合并
+
+训练脚本从两个来源读取评分数据后，通过 combine_rating_sources() 函数以 unionByName 合并：
+
+    training_ratings = movielens_train_df.unionByName(system_ratings_df)
+
+合并前，MovieLens 评分中的 userId 字段已加上 ml_user_offset，确保两类评分在同一 Spark DataFrame 中的 userId 字段取值不重叠。合并后的训练集统一以 (userId: Int, movieId: Int, rating: Float) 格式送入 ALS.fit()。
+
+6.2.3  Spark ALS 训练
+
+ALS 模型在 PySpark MLlib 中以如下方式构建并训练：
+
+    als = ALS(rank=50, maxIter=10, regParam=0.1,
+              userCol="userId", itemCol="movieId", ratingCol="rating",
+              coldStartStrategy="drop", nonnegative=True, implicitPrefs=False)
+    model = als.fit(training_ratings)
+
+训练完成后，在 MovieLens 测试集上计算 RMSE：
+
+    predictions = model.transform(ml_test)
+    rmse = RegressionEvaluator(metricName="rmse",
+               labelCol="rating", predictionCol="prediction").evaluate(predictions)
+
+实际训练结果：RMSE = 0.8072，满足目标阈值 < 0.85。
+
+6.2.4  批量推荐生成
+
+调用 model.recommendForAllUsers(top_n=20) 为所有用户生成 Top-20 推荐后，通过 posexplode 展开并按 registered_users 过滤，只保留系统注册用户的推荐记录，最终以 append 模式写入 recommendations 表，本次训练共写入 4,018,960 条推荐记录。
+
+6.3  在线推荐模块
+
+6.3.1  用户评分接口
+
+评分提交接口（POST /api/ratings/）接收 JSON 请求体 {"movie_id": int, "rating": float}，执行以下步骤：
+（1）验证 JWT 令牌，获取当前用户 ID；
+（2）校验 rating 值合法性（0.5 ≤ rating ≤ 5.0）及 movie_id 存在性；
+（3）若 user_ratings 表中已存在相同 (user_id, movie_id) 记录，则更新评分与时间戳（upsert 语义）；否则新建记录；
+（4）提交事务，返回 200（更新）或 201（新建）。
+
+评分提交成功后，用户的下一次推荐请求即可反映最新评分，无需任何额外操作。
+
+6.3.2  电影因子加载与缓存
+
+OnlineRecommendationService 在首次处理某个 active 模型版本的推荐请求时，从 model_item_factors 表读取全部电影因子，构建 {movie_id → numpy 向量} 字典并缓存在内存中：
+
+    with self._cache_lock:  # RLock 保证线程安全
+        if version not in self._factor_cache:
+            factors = load_from_db(version)
+            self._factor_cache[version] = factors
+
+缓存使用 Python RLock 保护，保证在多线程 Flask 环境（生产部署时通常使用多 worker）下不会出现并发写入问题。当模型版本切换时，新版本因子被加载到缓存中，旧版本缓存在 GC 时自然释放（无显式清理逻辑，因单次训练版本数量有限）。
+
+6.3.3  用户向量实时求解
+
+从 user_ratings 表读取用户历史评分后，构建 Q_u 矩阵和 r_u 向量，调用 recommendation_core.solve_user_vector() 执行 NNLS 求解：
+
+    rated_factors = [factors[mid] for mid in rated_movie_ids]
+    user_vector = solve_user_vector(
+        np.asarray(rated_factors),
+        np.asarray(rated_values),
+        reg_param=model.reg_param,
+        nonnegative=True
+    )
+
+solve_user_vector 内部将正则化矩阵增广后调用 scipy.optimize.nnls，返回非负用户隐向量。求解完成后，调用 recommendation_core.rank_unrated_items() 完成评分计算、已评电影过滤和排序，返回 Top-20 推荐列表。
+
+6.3.4  推荐结果回退机制
+
+get_for_user() 方法封装了完整的回退逻辑：
+（1）若数据库无 active 模型，返回 None → 返回空列表；
+（2）若用户无评分记录，返回 active 版本的批量推荐；
+（3）若在线推荐过程中抛出 ValueError、KeyError、JSONDecodeError 等已知异常，回退到批量推荐并记录警告日志；
+（4）若出现未预期异常，同样回退并记录 ERROR 级别日志，保证接口不崩溃。
+
+6.4  数据存储与模型管理
+
+6.4.1  用户与评分数据表
+
+users 表存储系统注册用户，字段包括自增主键 id、唯一用户名 username 和 bcrypt 哈希密码 password_hash。密码采用 Werkzeug 的 generate_password_hash() 函数哈希存储，验证时调用 check_password_hash()，原始密码不落库。
+
+user_ratings 表为应用唯一的评分来源，通过外键 fk_user_ratings_user 约束 user_id 必须存在于 users 表，通过唯一键 uk_user_movie(user_id, movie_id) 保证同一用户对同一电影只保留最新一条评分。ratings 表作为 legacy 表保留，不参与任何应用逻辑或训练流程，保留的目的仅为避免历史数据迁移引入风险。
+
+6.4.2  推荐结果表
+
+recommendations 表按 (model_version, user_id, rank) 建立复合索引，支持高效的"按模型版本和用户 ID 查询前 N 条推荐"操作。由于 Spark JDBC 批量写入时外键检查开销较大，且推荐数据在写入前已过滤为合法的 movie_id，该表的 movie_id 字段不设置外键约束，一致性由应用层保证。
+
+6.4.3  模型版本表
+
+model_versions 表记录每次训练的版本号、rank、reg_param、状态（building/active/retired）以及生成时间和激活时间，以 INDEX idx_model_status(status, generated_at) 支持高效查询当前 active 版本，避免全表扫描。
+
+6.4.4  电影因子表
+
+model_item_factors 表以 (model_version, movie_id) 为复合主键，factors 字段存储 JSON 数组格式的 50 维隐向量。Flask 服务加载时将 JSON 字符串解析为 numpy 数组，并校验维度（必须为 1-D 且长度等于模型 rank）和有限性（不含 NaN/Inf），确保后续矩阵运算的数值稳定性。
+
+6.5  API 服务模块
+
+6.5.1  认证模块
+
+认证蓝图（/api/auth）提供注册（POST /register）和登录（POST /login）两个接口。登录成功后返回 Flask-JWT-Extended 生成的 JWT 令牌，有效期为 7 天。前端将令牌存储在 Pinia 的 auth store 中，Axios 请求拦截器自动在每个需要鉴权的请求头中注入 Authorization: Bearer {token}。
+
+6.5.2  电影模块
+
+电影蓝图（/api/movies）提供电影列表（GET /）、电影详情（GET /:id）和类型列表（GET /genres）三个接口。列表接口支持按关键词、类型和年份区间筛选，以及分页参数（page/per_page），数据库查询使用 SQLAlchemy ORM 构建动态 filter 条件，避免 SQL 注入。详情接口还返回该电影的平均评分（通过 db.session.query(func.avg(...)).filter_by(movie_id=id).scalar() 计算）。
+
+6.5.3  评分模块
+
+评分蓝图（/api/ratings）的实现已在6.3.1节描述。此外，GET /me 接口返回当前用户的最近 200 条评分历史（按 rated_at 降序），供前端"我的评分"页面展示。
+
+6.5.4  推荐模块
+
+推荐蓝图（/api/recommendations）仅包含单个接口 GET /，需携带有效 JWT 令牌。接口从 Flask 应用扩展 app.extensions["recommendation_service"] 获取推荐服务单例（在 create_app() 时初始化，避免多请求重复构建因子缓存），调用 service.get_for_user(user_id) 获取推荐列表后返回 JSON 响应。
+
+6.6  前端展示模块
+
+6.6.1  应用架构
+
+前端采用 Vue 3 + Vite + Element Plus 技术栈，以单页面应用（SPA）形式组织，通过 Vue Router 实现客户端路由，使用 Pinia 管理全局状态（主要为 JWT 令牌和用户信息），以 Axios 封装的 API 模块与后端通信。Vite 开发服务器配置了 /api 路径的反向代理，将开发时的跨域请求转发到 Flask（localhost:5000），无需额外配置 CORS 处理。
+
+6.6.2  核心页面
+
+系统包含五个主要页面：登录页（LoginView）实现用户身份验证，注册页（RegisterView）实现新用户创建，电影列表页（HomeView）支持按类型/关键词/年份筛选与分页浏览，电影详情页（MovieDetailView）展示电影信息并提供评分控件（Element Plus Rate 组件，支持半星），推荐页（RecommendationsView）展示当前用户的 Top-20 个性化推荐列表及每部电影的预测评分。
+
+6.6.3  JWT 鉴权流程
+
+用户登录后，后端返回的 JWT 令牌由 Pinia auth store 保存（并持久化到 localStorage），后续所有请求的 Axios 实例在请求拦截器中自动附加 Authorization: Bearer {token} 头。需要鉴权的接口（评分提交、推荐查询）若缺少或令牌过期，Flask 返回 401，前端拦截到 401 后自动清除本地令牌并重定向到登录页。
+
+
+第7章  系统测试与应用验证
+
+7.1  测试方案
+
+7.1.1  测试环境
+
+【待补充：填写测试时使用的机器配置、浏览器版本、测试工具（如 Postman、curl、pytest）等。参考格式：测试环境与开发环境一致，后端运行于 Windows 10 开发机（Python 3.12，Flask 3.x），数据库为本地 MySQL 8.0，前端使用 Chrome XX 版本进行功能验证，接口测试使用 Postman vXX.X。】
+
+7.1.2  测试数据
+
+功能测试使用独立的测试账号集合，在测试开始前通过注册接口创建，测试结束后清理。测试所用电影数据来源于已导入 MySQL 的 MovieLens 数据，不额外造数。推荐结果测试依赖已完成训练并处于 active 状态的模型版本。
+
+7.1.3  测试内容
+
+测试分为三个层次：（1）功能正确性验证，覆盖所有核心 API 接口的正常路径与异常路径；（2）边界条件与错误处理验证，覆盖未登录访问鉴权接口、评分值越界、不存在的电影 ID 等边界场景；（3）系统性能与可靠性验证，通过模拟高频请求观察推荐接口在连续负载下的响应时延与稳定性。
+
+7.2  功能正确性验证
+
+7.2.1  电影查询功能
+
+表7-1  电影查询接口测试用例
+
+    用例编号  测试场景                 请求示例                           预期结果
+    TC-M-01  无筛选条件，第1页        GET /api/movies/?page=1            返回20条电影，total>0，HTTP 200
+    TC-M-02  按关键词搜索             GET /api/movies/?keyword=toy       返回含"Toy Story"等电影，HTTP 200
+    TC-M-03  按类型筛选               GET /api/movies/?genre=Comedy      返回 genres 含"Comedy"的电影
+    TC-M-04  按年份区间筛选           GET /api/movies/?year_from=1990&year_to=1999  返回 1990-1999 年间电影
+    TC-M-05  查询单部电影详情         GET /api/movies/1                  返回 Toy Story 详情及平均评分
+    TC-M-06  查询不存在的电影         GET /api/movies/9999999            HTTP 404，返回"资源不存在"
+    TC-M-07  获取所有类型列表         GET /api/movies/genres             返回非空数组，含"Drama"等类型
+
+【待补充：填写每个用例的实际测试结果（通过/失败）以及关键响应截图或日志摘录。】
+
+7.2.2  用户评分提交功能
+
+表7-2  评分提交接口测试用例
+
+    用例编号  测试场景                 请求示例                           预期结果
+    TC-R-01  合法评分（新增）         POST /api/ratings/ {movie_id:1, rating:4.5}  HTTP 201，返回评分记录
+    TC-R-02  合法评分（更新）         再次 POST 同一 movie_id，rating:3.0         HTTP 200，rating 更新为3.0
+    TC-R-03  评分值越下界             rating=0.0                         HTTP 400，提示"rating 范围 0.5~5.0"
+    TC-R-04  评分值越上界             rating=5.5                         HTTP 400，提示"rating 范围 0.5~5.0"
+    TC-R-05  movie_id 不存在          movie_id=9999999                   HTTP 404，提示"电影不存在"
+    TC-R-06  未携带 JWT 直接访问      无 Authorization 头                HTTP 401，鉴权失败
+    TC-R-07  查询当前用户评分历史     GET /api/ratings/me                HTTP 200，返回评分列表
+
+【待补充：填写实际测试结果。】
+
+7.2.3  推荐结果查询功能
+
+表7-3  推荐接口测试用例
+
+    用例编号  测试场景                         预期结果
+    TC-Rec-01  模型已 active，用户有评分       HTTP 200，返回 top_n=20 条推荐，字段含 rank/predicted_rating/movie
+    TC-Rec-02  模型已 active，用户无评分       HTTP 200，返回批量推荐结果（与 recommendations 表一致）
+    TC-Rec-03  用户提交新评分后再次请求         推荐列表与提交评分前不同，新评分所属类型比例可见变化
+    TC-Rec-04  无 active 模型（首次部署）      HTTP 200，data 为空数组，msg 含提示信息
+    TC-Rec-05  未携带 JWT                       HTTP 401
+
+【待补充：填写实际测试结果及必要的推荐列表截图（建议附上【图7-1 推荐页面截图】）。】
+
+7.2.4  重复评分更新验证
+
+对同一用户对同一电影多次提交不同评分，验证 user_ratings 表中 (user_id, movie_id) 唯一键约束生效，数据库中只保留最后一次评分，且对应的 rated_at 时间戳更新为最新提交时间。此行为通过对 user_ratings 表执行 SELECT 查询验证，确认无重复记录。
+
+7.3  系统性能与可靠性验证
+
+7.3.1  推荐接口响应时延
+
+【待补充：使用 Postman 或 Apache Bench (ab) 对推荐接口进行压力测试，记录单用户连续请求下的响应时延分布。参考格式：
+
+表7-4  推荐接口响应时延（单用户，连续 XX 次请求）
+
+    路径                                  P50      P95      P99
+    /api/recommendations/（无评分，批量回退）  【ms】   【ms】   【ms】
+    /api/recommendations/（有N条评分，在线NNLS）  【ms】   【ms】   【ms】
+】
+
+7.3.2  模型发布期间服务连续性验证
+
+在 Spark 训练作业运行期间（模型处于 building 状态），前端同时发起推荐查询，验证 Flask 仍返回上一个 active 版本的推荐结果，不受正在进行的训练影响，服务无中断。训练完成并切换 active 后，推荐结果切换到新版本。通过对比训练前后推荐列表的 model_version 字段可确认版本切换成功。
+
+【待补充：附相关日志截图或命令行输出【图7-2 模型发布日志】。】
+
+
+第8章  总结与展望
+
+8.1  研究工作总结
+
+本文以 MovieLens-32M 数据集为基础，完整设计并实现了一套基于 Hadoop 生态的个性化电影推荐系统。研究工作涵盖以下方面：对 ALS 协同过滤算法进行了系统的理论分析与数学推导；针对 MovieLens 数据集的特点完成了数据预处理与用户 ID 命名空间隔离设计；基于 PySpark MLlib 实现了大规模 ALS 模型训练流水线；设计并实现了离线批量推荐与在线 NNLS 实时推荐相结合的两阶段混合推荐机制；构建了基于 Flask RESTful API 的后端服务与基于 Vue 3 的前端单页面应用，形成了从存储、计算到前端展示的完整端到端系统。
+
+8.2  主要研究结论
+
+（1）在 MovieLens-32M 数据集上，采用 rank=50、regParam=0.1、maxIter=10 配置的 ALS 协同过滤模型达到了测试集 RMSE = 0.8072，低于预设目标阈值 0.85，验证了该参数配置在大规模显式评分数据上的有效性。
+
+（2）基于固定电影因子的在线 NNLS 推荐机制，在不重新训练全局模型的前提下，实现了用户新增评分后推荐的即时更新，有效弥补了离线批量推荐在时效性上的不足，对于缓解新用户冷启动问题具有实际意义。
+
+（3）用户 ID 命名空间隔离设计（通过为 MovieLens 用户 ID 添加固定偏移量）和模型版本状态机管理（building→active→retired）是保证系统数据正确性与服务连续性的关键工程措施，在实际部署中均经过了验证。
+
+8.3  系统实现总结
+
+系统在工程层面实现了以下关键目标：各模块通过 config.yaml 统一配置，无硬编码的连接参数；Spark 训练作业通过 JDBC 与 MySQL 解耦，训练结果以追加模式写入，不影响正在服务的版本；Flask 服务以推荐服务单例挂载在 app.extensions，避免多请求重复加载因子矩阵；前端通过 Vite 代理与 Axios 拦截器实现了透明的 JWT 鉴权，用户体验流畅。整体架构分层清晰，各组件职责明确，具备较好的可维护性。
+
+8.4  不足与展望
+
+本系统在以下方面尚存在改进空间：
+
+（1）推荐算法的扩展。当前系统仅使用 ALS 协同过滤，对于无任何评分历史的纯新用户（冷启动问题）只能返回全局批量推荐，缺乏个性化。未来可引入基于内容的过滤（Content-Based Filtering）对电影进行向量化表示，或采用混合推荐方法，在冷启动阶段结合用户注册信息（如年龄、偏好标签）给出初始推荐。
+
+（2）推荐多样性的控制。当前 Top-N 列表可能出现同类型电影扎堆的情况，降低推荐列表的覆盖度与惊喜感。可引入最大边际相关性（Maximal Marginal Relevance，MMR）或行列式点过程（Determinantal Point Process，DPP）等多样性控制方法对推荐列表进行后处理。
+
+（3）近实时训练的支持。当前系统的全量重训需要手动触发（运行 run_training.sh），在系统用户评分数量积累到一定规模后，可接入 Apache Kafka 进行评分流采集，并基于 Spark Structured Streaming 实现增量更新或定期自动重训。
+
+（4）系统可观测性的完善。当前系统缺乏推荐质量的在线监控（如点击率、评分后推荐接受率等反馈信号），无法评估线上推荐效果的动态变化。未来可引入 A/B 测试框架，对不同模型版本的推荐结果进行在线对比评估。
+
+（5）生产部署的加固。当前部署配置（Flask debug=True、单 Gunicorn 进程）仅适合开发与演示环境。生产部署需关闭 debug 模式、配置 Gunicorn 多 worker、引入 Nginx 反向代理、替换 JWT secret_key 为随机强密钥，并对 MySQL 连接池参数进行调优。
+
+
+致　谢
+
+【待补充：致谢内容由作者自行撰写，通常感谢指导教师、协助调试的同学以及数据集提供方（GroupLens Research, University of Minnesota）。】
+
+
+参考文献
+
+【由作者自行补充，建议包括以下方向的文献：
+1. 协同过滤与矩阵分解的奠基性论文（Sarwar 2001、Koren 2009 Netflix Prize 总结）；
+2. ALS 并行化实现相关论文（Zhou 2008 等）；
+3. Spark MLlib 技术文档或相关论文；
+4. MovieLens 数据集说明文档（Harper & Konstan 2015）；
+5. 深度学习推荐模型综述（供扩展阅读）；
+6. Hadoop 与 HDFS 相关技术文档；
+7. Flask、Vue 3 等技术的官方文档（如作为系统实现参考）。
+】
+

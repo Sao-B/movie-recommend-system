@@ -1,128 +1,214 @@
-"""
-train_als.py — 基于 MovieLens-32M 的 ALS 协同过滤离线训练
+"""Train ALS with isolated MovieLens IDs and publish a versioned model."""
 
-流程：
-    1. 从 HDFS 读取 ratings.csv
-    2. 8:2 划分训练集 / 测试集
-    3. 训练 ALS 模型
-    4. 在测试集上计算 RMSE
-    5. 为全部用户生成 Top-N 推荐
-    6. 将推荐结果写入 MySQL recommendations 表
-
-运行方式：
-    spark-submit --master local[*] \\
-                 --driver-memory 4g \\
-                 spark/train_als.py
-"""
-
-import sys
 import os
+import sys
+from datetime import datetime, timezone
+from uuid import uuid4
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from pyspark.ml.recommendation import ALS
 from pyspark.ml.evaluation import RegressionEvaluator
+from pyspark.ml.recommendation import ALS
 from pyspark.sql import functions as F
 
+from utils.mysql_utils import (
+    activate_model_version,
+    create_model_version,
+    read_df_from_mysql,
+    retire_model_version,
+    write_df_to_mysql,
+)
 from utils.spark_session import get_spark_session
-from utils.mysql_utils import write_df_to_mysql
+from utils.training_contract import (
+    build_system_ratings_query,
+    combine_rating_sources,
+    filter_recommendations_to_system_users,
+)
+from utils.user_id_namespace import validate_user_id_namespace
+
+
+def _new_model_version():
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"als-{timestamp}-{uuid4().hex[:12]}"
+
+
+def _read_max_system_user_id(spark, jdbc_url, mysql_cfg):
+    row = read_df_from_mysql(
+        spark,
+        "(SELECT COALESCE(MAX(id), 0) AS max_system_user_id FROM users) AS t",
+        jdbc_url,
+        mysql_cfg["user"],
+        mysql_cfg["password"],
+    ).first()
+    return int(row["max_system_user_id"] or 0)
+
+
+def _read_system_users(spark, jdbc_url, mysql_cfg):
+    return (
+        read_df_from_mysql(spark, "users", jdbc_url, mysql_cfg["user"], mysql_cfg["password"])
+        .select(F.col("id").cast("int").alias("user_id"))
+        .distinct()
+    )
 
 
 def main():
     spark, cfg, jdbc_url = get_spark_session("ALS-Training")
     mysql_cfg = cfg["mysql"]
-    hdfs_cfg  = cfg["hdfs"]
-    als_cfg   = cfg["als"]
+    hdfs_cfg = cfg["hdfs"]
+    als_cfg = cfg["als"]
+    model_version = None
 
-    # ── 1. 读取评分数据 ───────────────────────────────────────────
-    print(f"读取 {hdfs_cfg['ratings_path']} ...")
-    ratings_raw = spark.read.csv(
-        hdfs_cfg["ratings_path"], header=True, inferSchema=True
-    )
-    ratings = (
-        ratings_raw
-        .select(
-            F.col("userId").cast("int"),
-            F.col("movieId").cast("int"),
-            F.col("rating").cast("float")
+    try:
+        print(f"Reading MovieLens ratings from {hdfs_cfg['ratings_path']} ...")
+
+        ratings_raw = spark.read.csv(
+            hdfs_cfg["ratings_path"], header=True, inferSchema=True
         )
-        .na.drop()
-    )
-    # 缓存 ratings，避免 randomSplit 后多次 count() 重复计算
-    ratings.cache()
-    total = ratings.count()
-    print(f"有效评分总数: {total:,}")
-
-    # ── 2. 划分训练集 / 测试集 ────────────────────────────────────
-    train_ratio = float(als_cfg["train_ratio"])
-    train, test = ratings.randomSplit([train_ratio, 1 - train_ratio], seed=42)
-    print(f"训练集: {train.count():,}  测试集: {test.count():,}")
-
-    # ── 3. 训练 ALS 模型 ──────────────────────────────────────────
-    als = ALS(
-        rank=int(als_cfg["rank"]),
-        maxIter=int(als_cfg["max_iter"]),
-        regParam=float(als_cfg["reg_param"]),
-        userCol="userId",
-        itemCol="movieId",
-        ratingCol="rating",
-        coldStartStrategy=als_cfg["cold_start_strategy"],
-        nonnegative=True,
-        implicitPrefs=False
-    )
-    print(
-        f"开始训练 ALS "
-        f"(rank={als_cfg['rank']}, maxIter={als_cfg['max_iter']}, "
-        f"regParam={als_cfg['reg_param']}) ..."
-    )
-    model = als.fit(train)
-    print("模型训练完成 ✓")
-
-    # ── 4. RMSE 评估 ──────────────────────────────────────────────
-    predictions = model.transform(test)
-    evaluator = RegressionEvaluator(
-        metricName="rmse",
-        labelCol="rating",
-        predictionCol="prediction"
-    )
-    rmse = evaluator.evaluate(predictions)
-    print(f"\n{'='*48}")
-    print(f"  测试集 RMSE: {rmse:.4f}")
-    print(f"{'='*48}\n")
-
-    # ── 5. 为全部用户生成 Top-N 推荐 ─────────────────────────────
-    top_n = int(als_cfg["top_n"])
-    print(f"生成每位用户 Top-{top_n} 推荐 ...")
-    user_recs = model.recommendForAllUsers(top_n)
-
-    # 展开嵌套列：(userId, [{movieId, rating}, ...]) → 平铺行
-    recs_flat = (
-        user_recs
-        .select(
-            F.col("userId").alias("user_id"),
-            F.posexplode(F.col("recommendations")).alias("pos", "rec")
+        ratings_ml_raw = (
+            ratings_raw
+            .select(
+                F.col("userId").cast("long").alias("ml_user_id"),
+                F.col("movieId").cast("int").alias("movieId"),
+                F.col("rating").cast("float").alias("rating"),
+            )
+            .na.drop()
         )
-        .select(
-            F.col("user_id"),
-            F.col("rec.movieId").alias("movie_id"),
-            F.col("rec.rating").alias("predicted_rating"),
-            (F.col("pos") + 1).alias("rank")          # 排名从 1 开始
+        max_ml_user_id = int(
+            ratings_ml_raw.agg(F.max("ml_user_id").alias("max_ml_user_id")).first()[0]
         )
-    )
-    rec_count = recs_flat.count()
-    print(f"推荐记录总数: {rec_count:,}")
+        max_system_user_id = _read_max_system_user_id(spark, jdbc_url, mysql_cfg)
+        validate_user_id_namespace(
+            max_system_user_id=max_system_user_id,
+            max_movielens_user_id=max_ml_user_id,
+        )
 
-    # ── 6. 写入 MySQL recommendations 表 ─────────────────────────
-    print("写入 MySQL recommendations 表 ...")
-    write_df_to_mysql(
-        recs_flat, "recommendations", jdbc_url,
-        mysql_cfg["user"], mysql_cfg["password"],
-        mode="overwrite"
-    )
-    print("写入完成 ✓")
-    print(f"\n训练摘要：评分总数={total:,}  RMSE={rmse:.4f}  推荐条数={rec_count:,}")
+        ratings_ml = ratings_ml_raw.select(
+            (-F.col("ml_user_id")).cast("int").alias("userId"),
+            F.col("movieId"),
+            F.col("rating"),
+        )
+        ml_count = ratings_ml.count()
+        print(f"MovieLens ratings: {ml_count:,}; MovieLens user IDs negated")
 
-    spark.stop()
+        registered_users = _read_system_users(spark, jdbc_url, mysql_cfg)
+        ratings_system = (
+            read_df_from_mysql(
+                spark,
+                build_system_ratings_query(),
+                jdbc_url,
+                mysql_cfg["user"],
+                mysql_cfg["password"],
+            )
+            .select(
+                F.col("userId").cast("int"),
+                F.col("movieId").cast("int"),
+                F.col("rating").cast("float"),
+            )
+            .na.drop()
+            .join(
+                registered_users.withColumnRenamed("user_id", "userId"),
+                "userId",
+                "left_semi",
+            )
+        )
+        system_count = ratings_system.count()
+        print(f"Application-user ratings: {system_count:,}")
+
+        ml_train, ml_test = ratings_ml.randomSplit(
+            [float(als_cfg["train_ratio"]), 1 - float(als_cfg["train_ratio"])],
+            seed=42,
+        )
+        training_ratings = combine_rating_sources(ml_train, ratings_system).cache()
+        training_count = training_ratings.count()
+        print(f"Training ratings: {training_count:,}; MovieLens test ratings: {ml_test.count():,}")
+
+        als = ALS(
+            rank=int(als_cfg["rank"]),
+            maxIter=int(als_cfg["max_iter"]),
+            regParam=float(als_cfg["reg_param"]),
+            userCol="userId",
+            itemCol="movieId",
+            ratingCol="rating",
+            coldStartStrategy=als_cfg["cold_start_strategy"],
+            nonnegative=True,
+            implicitPrefs=False,
+        )
+        model = als.fit(training_ratings)
+
+        predictions = model.transform(ml_test)
+        evaluator = RegressionEvaluator(
+            metricName="rmse", labelCol="rating", predictionCol="prediction"
+        )
+        rmse = evaluator.evaluate(predictions)
+        print(f"MovieLens test RMSE: {rmse:.4f}")
+
+        model_version = _new_model_version()
+        create_model_version(
+            mysql_cfg,
+            model_version,
+            rank=int(als_cfg["rank"]),
+            reg_param=float(als_cfg["reg_param"]),
+        )
+
+        item_factors = model.itemFactors.select(
+            F.lit(model_version).alias("model_version"),
+            F.col("id").cast("int").alias("movie_id"),
+            F.to_json(F.col("features")).alias("factors"),
+        )
+        write_df_to_mysql(
+            item_factors,
+            "model_item_factors",
+            jdbc_url,
+            mysql_cfg["user"],
+            mysql_cfg["password"],
+            mode="append",
+        )
+
+        user_recs = model.recommendForAllUsers(int(als_cfg["top_n"]))
+        recs_flat = (
+            user_recs
+            .select(
+                F.col("userId").alias("user_id"),
+                F.posexplode(F.col("recommendations")).alias("pos", "rec"),
+            )
+            .select(
+                "user_id",
+                F.col("rec.movieId").cast("int").alias("movie_id"),
+                F.col("rec.rating").cast("float").alias("predicted_rating"),
+                (F.col("pos") + 1).cast("smallint").alias("rank"),
+            )
+        )
+        recs_flat = filter_recommendations_to_system_users(
+            recs_flat, registered_users, "user_id"
+        ).withColumn("model_version", F.lit(model_version))
+        recs_flat = recs_flat.select(
+            "model_version", "user_id", "movie_id", "predicted_rating", "rank"
+        )
+        rec_count = recs_flat.count()
+        write_df_to_mysql(
+            recs_flat,
+            "recommendations",
+            jdbc_url,
+            mysql_cfg["user"],
+            mysql_cfg["password"],
+            mode="append",
+        )
+
+        activate_model_version(mysql_cfg, model_version)
+        print(
+            f"Published model {model_version}: training={training_count:,}, "
+            f"MovieLens={ml_count:,}, system={system_count:,}, "
+            f"RMSE={rmse:.4f}, recommendations={rec_count:,}"
+        )
+    except Exception:
+        if model_version is not None:
+            try:
+                retire_model_version(mysql_cfg, model_version)
+            except Exception as cleanup_error:
+                print(f"Could not retire failed model {model_version}: {cleanup_error}")
+        raise
+    finally:
+        spark.stop()
 
 
 if __name__ == "__main__":
