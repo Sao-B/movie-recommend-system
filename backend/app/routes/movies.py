@@ -43,12 +43,13 @@ def list_movies():
     # 排序逻辑
     if sort == "popular":
         # 按评分数和平均评分排序，没有评分的排在后面
+        # MySQL 不支持 NULLS LAST，使用 COALESCE 或 IFNULL 替代
         query = query.order_by(
-            subquery.c.rating_count.desc().nulls_last(),
-            subquery.c.avg_rating.desc().nulls_last()
+            func.coalesce(subquery.c.rating_count, 0).desc(),
+            func.coalesce(subquery.c.avg_rating, 0).desc()
         )
     elif sort == "latest":
-        query = query.order_by(Movie.year.desc().nulls_last())
+        query = query.order_by(func.coalesce(Movie.year, 0).desc())
     else:
         query = query.order_by(Movie.movie_id)
 
