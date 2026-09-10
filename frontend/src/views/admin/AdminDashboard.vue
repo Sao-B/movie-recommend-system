@@ -7,7 +7,7 @@
           <div class="stat-item">
             <el-icon class="stat-icon user"><User /></el-icon>
             <div class="stat-content">
-              <div class="stat-value">{{ stats.total_users || 0 }}</div>
+              <div class="stat-value">{{ stats.user_count || 0 }}</div>
               <div class="stat-label">总用户数</div>
             </div>
           </div>
@@ -18,7 +18,7 @@
           <div class="stat-item">
             <el-icon class="stat-icon movie"><Film /></el-icon>
             <div class="stat-content">
-              <div class="stat-value">{{ stats.total_movies || 0 }}</div>
+              <div class="stat-value">{{ stats.movie_count || 0 }}</div>
               <div class="stat-label">总电影数</div>
             </div>
           </div>
@@ -29,7 +29,7 @@
           <div class="stat-item">
             <el-icon class="stat-icon rating"><Star /></el-icon>
             <div class="stat-content">
-              <div class="stat-value">{{ stats.total_ratings || 0 }}</div>
+              <div class="stat-value">{{ stats.rating_count || 0 }}</div>
               <div class="stat-label">总评分数</div>
             </div>
           </div>
