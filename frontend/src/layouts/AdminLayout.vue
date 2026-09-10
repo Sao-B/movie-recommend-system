@@ -35,15 +35,6 @@
       </el-menu>
     </el-aside>
     <el-container>
-      <el-header>
-        <h2>电影推荐系统 - 管理后台</h2>
-        <div class="user-info">
-          <span>管理员: {{ username }}</span>
-          <el-button link @click="router.push('/')">返回前台</el-button>
-          <el-divider direction="vertical" />
-          <el-button type="danger" link @click="handleLogout">退出登录</el-button>
-        </div>
-      </el-header>
       <el-main>
         <router-view />
       </el-main>
@@ -53,21 +44,11 @@
 
 <script setup>
 import { computed } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
-import { useAuthStore } from '@/stores/auth'
+import { useRoute } from 'vue-router'
 import { DataAnalysis, User, Film, Star, Setting, Management } from '@element-plus/icons-vue'
 
-const router = useRouter()
 const route = useRoute()
-const authStore = useAuthStore()
-
-const username = computed(() => authStore.user?.username || 'Admin')
 const activeMenu = computed(() => route.path)
-
-const handleLogout = () => {
-  authStore.logout()
-  router.push('/login')
-}
 </script>
 
 <style scoped>
@@ -89,26 +70,6 @@ const handleLogout = () => {
   color: #fff;
   gap: 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.el-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background-color: #fff;
-  border-bottom: 1px solid #e6e6e6;
-  padding: 0 20px;
-}
-
-.el-header h2 {
-  margin: 0;
-  font-size: 20px;
-}
-
-.user-info {
-  display: flex;
-  align-items: center;
-  gap: 10px;
 }
 
 .el-main {
