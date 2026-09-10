@@ -6,6 +6,7 @@ from .routes.auth import auth_bp
 from .routes.movies import movies_bp
 from .routes.recommendations import rec_bp
 from .routes.ratings import ratings_bp
+from .routes.admin import admin_bp
 
 
 def create_app(config_obj=None):
@@ -27,11 +28,25 @@ def create_app(config_obj=None):
     CORS(app, origins=origins)
     JWTManager(app)
 
+    # 在线推荐服务：应用级单例，避免多线程环境下重复构建因子缓存
+    import sys
+    import os
+    backend_dir = os.path.join(os.path.dirname(__file__), "..")
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    from recommendation_service import OnlineRecommendationService
+    from .recommendation_repository import SqlAlchemyRecommendationRepository
+    app.extensions["recommendation_service"] = OnlineRecommendationService(
+        SqlAlchemyRecommendationRepository(),
+        top_n=app.config.get("ALS_TOP_N", 20),
+    )
+
     # 蓝图注册
     app.register_blueprint(auth_bp,    url_prefix="/api/auth")
     app.register_blueprint(movies_bp,  url_prefix="/api/movies")
     app.register_blueprint(rec_bp,     url_prefix="/api/recommendations")
     app.register_blueprint(ratings_bp, url_prefix="/api/ratings")
+    app.register_blueprint(admin_bp,   url_prefix="/api/admin")
 
     # 全局错误处理
     @app.errorhandler(404)
