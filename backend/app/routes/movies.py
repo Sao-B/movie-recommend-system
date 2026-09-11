@@ -18,20 +18,7 @@ def list_movies():
     year     = request.args.get("year", type=int)
     sort     = request.args.get("sort", "popular").strip()  # popular, latest, movie_id
 
-    # 子查询：计算每部电影的平均评分和评分数
-    subquery = (
-        db.session.query(
-            Rating.movie_id,
-            func.avg(Rating.rating).label('avg_rating'),
-            func.count(Rating.id).label('rating_count')
-        )
-        .group_by(Rating.movie_id)
-        .subquery()
-    )
-
-    # 主查询：关联电影和评分统计
-    query = db.session.query(Movie, subquery.c.avg_rating, subquery.c.rating_count)\
-        .outerjoin(subquery, Movie.movie_id == subquery.c.movie_id)
+    query = Movie.query
 
     if genre:
         query = query.filter(Movie.genres.like(f"%{genre}%"))
@@ -40,13 +27,14 @@ def list_movies():
     if year:
         query = query.filter(Movie.year == year)
 
-    # 排序逻辑
+    # 排序逻辑：使用 movies 表中的 MovieLens 统计数据
     if sort == "popular":
-        # 按评分数和平均评分排序，没有评分的排在后面
-        # MySQL 不支持 NULLS LAST，使用 COALESCE 或 IFNULL 替代
+        # 按平均评分排序（主要），评分人数为次要
+        # 过滤掉评分人数少于 100 的电影，避免小样本偏差
+        query = query.filter(Movie.rating_count >= 100)
         query = query.order_by(
-            func.coalesce(subquery.c.rating_count, 0).desc(),
-            func.coalesce(subquery.c.avg_rating, 0).desc()
+            func.coalesce(Movie.avg_rating, 0).desc(),
+            func.coalesce(Movie.rating_count, 0).desc()
         )
     elif sort == "latest":
         query = query.order_by(func.coalesce(Movie.year, 0).desc())
@@ -55,12 +43,7 @@ def list_movies():
 
     pagination = query.paginate(page=page, per_page=per_page, error_out=False)
 
-    movies = []
-    for movie, avg_rating, rating_count in pagination.items:
-        movie_dict = movie.to_dict()
-        movie_dict["avg_rating"] = round(float(avg_rating), 2) if avg_rating else None
-        movie_dict["rating_count"] = rating_count or 0
-        movies.append(movie_dict)
+    movies = [movie.to_dict() for movie in pagination.items]
 
     return jsonify({
         "movies":   movies,
@@ -73,26 +56,13 @@ def list_movies():
 
 @movies_bp.get("/<int:movie_id>")
 def get_movie(movie_id: int):
-    """GET /api/movies/<id> — 电影详情 + 平均评分"""
+    """GET /api/movies/<id> — 电影详情 + MovieLens 平均评分"""
     movie = db.session.get(Movie, movie_id)
     if movie is None:
         return jsonify({"msg": "电影不存在"}), 404
 
-    avg_rating = (
-        db.session.query(func.avg(Rating.rating))
-        .filter(Rating.movie_id == movie_id)
-        .scalar()
-    )
-    rating_count = (
-        db.session.query(func.count(Rating.id))
-        .filter(Rating.movie_id == movie_id)
-        .scalar()
-    )
-
-    result = movie.to_dict()
-    result["avg_rating"]   = round(float(avg_rating), 2) if avg_rating else None
-    result["rating_count"] = rating_count or 0
-    return jsonify(result)
+    # 直接返回 Movie 模型中的 MovieLens 统计数据
+    return jsonify(movie.to_dict())
 
 
 @movies_bp.get("/genres")

@@ -34,24 +34,46 @@ class User(db.Model):
 class Movie(db.Model):
     __tablename__ = "movies"
 
-    movie_id = db.Column(db.Integer, primary_key=True)
-    title    = db.Column(db.String(500), nullable=False)
-    genres   = db.Column(db.String(500))
-    year     = db.Column(db.SmallInteger)
+    movie_id     = db.Column(db.Integer, primary_key=True)
+    title        = db.Column(db.String(500), nullable=False)
+    genres       = db.Column(db.String(500))
+    year         = db.Column(db.SmallInteger)
+    avg_rating   = db.Column(db.Numeric(3, 2))
+    rating_count = db.Column(db.Integer, default=0)
+    poster_url   = db.Column(db.String(500))
+    overview     = db.Column(db.Text)
+    director     = db.Column(db.String(500))
+    writers      = db.Column(db.Text)
+    cast         = db.Column(db.Text)
+    countries    = db.Column(db.String(200))
+    languages    = db.Column(db.String(200))
+    release_date = db.Column(db.Date)
+    runtime      = db.Column(db.SmallInteger)
 
     def to_dict(self):
         # 同时处理 None 和空字符串，避免 "".split("|") 返回 [""]
         genres_list = [g for g in (self.genres or "").split("|") if g]
         return {
-            "movie_id": self.movie_id,
-            "title":    self.title,
-            "genres":   genres_list,
-            "year":     self.year,
+            "movie_id":     self.movie_id,
+            "title":        self.title,
+            "genres":       genres_list,
+            "year":         self.year,
+            "avg_rating":   float(self.avg_rating) if self.avg_rating else None,
+            "rating_count": self.rating_count or 0,
+            "poster_url":   self.poster_url,
+            "overview":     self.overview,
+            "director":     self.director,
+            "writers":      self.writers,
+            "cast":         self.cast,
+            "countries":    self.countries,
+            "languages":    self.languages,
+            "release_date": self.release_date.isoformat() if self.release_date else None,
+            "runtime":      self.runtime,
         }
 
 
 class Rating(db.Model):
-    __tablename__ = "user_ratings"
+    __tablename__ = "ratings"
 
     id       = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
     user_id  = db.Column(db.Integer, db.ForeignKey("users.id"),
@@ -115,3 +137,28 @@ class ModelItemFactor(db.Model):
     movie_id     = db.Column(db.Integer, primary_key=True)
     factors      = db.Column(db.Text, nullable=False)
     generated_at = db.Column(db.DateTime, default=_utcnow)
+
+
+class MovieComment(db.Model):
+    __tablename__ = "movie_comments"
+
+    id         = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
+    user_id    = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    movie_id   = db.Column(db.Integer, db.ForeignKey("movies.movie_id"), nullable=False, index=True)
+    content    = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
+    user  = db.relationship("User", backref="comments")
+    movie = db.relationship("Movie", backref="comments")
+
+    def to_dict(self):
+        return {
+            "id":         self.id,
+            "user_id":    self.user_id,
+            "username":   self.user.username if self.user else None,
+            "movie_id":   self.movie_id,
+            "content":    self.content,
+            "created_at": self.created_at.replace(tzinfo=timezone.utc).isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.replace(tzinfo=timezone.utc).isoformat() if self.updated_at else None,
+        }

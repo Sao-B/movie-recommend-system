@@ -3,37 +3,76 @@
     <template v-if="movie">
       <el-button text @click="$router.back()" class="back-btn">← 返回</el-button>
       <el-card class="detail-card">
-        <h1 class="movie-title">{{ movie.title }}</h1>
-        <div class="meta">
-          <el-tag v-if="movie.year" type="info">{{ movie.year }}</el-tag>
-          <el-tag v-for="g in movie.genres" :key="g" class="genre-tag">{{ g }}</el-tag>
+        <div class="detail-layout">
+          <div class="poster-section">
+            <img v-if="movie.poster_url" :src="movie.poster_url" :alt="movie.title" class="detail-poster" />
+            <div v-else class="detail-poster-placeholder">
+              <el-icon :size="80"><Film /></el-icon>
+            </div>
+          </div>
+          <div class="info-section">
+            <h1 class="movie-title">{{ movie.title }}</h1>
+            <div class="meta">
+              <el-tag v-if="movie.year" type="info">{{ movie.year }}</el-tag>
+              <el-tag v-for="g in movie.genres" :key="g" class="genre-tag">{{ g }}</el-tag>
+            </div>
+
+            <el-divider />
+
+            <div class="movie-info">
+              <div class="info-row" v-if="movie.director">
+                <span class="info-label">导演：</span>
+                <span class="info-value">{{ movie.director }}</span>
+              </div>
+              <div class="info-row" v-if="movie.writers">
+                <span class="info-label">编剧：</span>
+                <span class="info-value">{{ movie.writers }}</span>
+              </div>
+              <div class="info-row" v-if="movie.cast">
+                <span class="info-label">主演：</span>
+                <span class="info-value">{{ movie.cast }}</span>
+              </div>
+              <div class="info-row" v-if="movie.countries">
+                <span class="info-label">制片地区：</span>
+                <span class="info-value">{{ movie.countries }}</span>
+              </div>
+              <div class="info-row" v-if="movie.languages">
+                <span class="info-label">语言：</span>
+                <span class="info-value">{{ movie.languages }}</span>
+              </div>
+              <div class="info-row" v-if="movie.release_date">
+                <span class="info-label">上映日期：</span>
+                <span class="info-value">{{ movie.release_date }}</span>
+              </div>
+              <div class="info-row" v-if="movie.runtime">
+                <span class="info-label">片长：</span>
+                <span class="info-value">{{ movie.runtime }} 分钟</span>
+              </div>
+            </div>
+
+            <el-divider />
+
+            <div class="stat-item">
+              <span class="stat-label">平均评分</span>
+              <el-rate :model-value="movie.avg_rating" disabled show-score allow-half />
+              <span class="stat-sub">（{{ movie.rating_count }} 人评价）</span>
+            </div>
+          </div>
         </div>
 
-        <el-divider />
-
-        <div class="stat-item">
-          <span class="stat-label">平均评分</span>
-          <el-rate :model-value="movie.avg_rating" disabled show-score allow-half />
-          <span class="stat-sub">（{{ movie.rating_count }} 人评价）</span>
-        </div>
-
-        <el-divider v-if="auth.isLoggedIn" />
-
-        <!-- 评分区域（需登录） -->
-        <template v-if="auth.isLoggedIn">
-          <h3>我的评分</h3>
-          <div class="rate-area">
-            <el-rate v-model="myRating" :max="5" allow-half show-score
-              :texts="['很差','较差','还行','推荐','强烈推荐']" show-text />
-            <el-button type="primary" :loading="submitting" :disabled="!myRating"
-              @click="submitRating" style="margin-left:16px">提交评分</el-button>
+        <template v-if="movie.overview">
+          <el-divider />
+          <div class="overview-section">
+            <h3>剧情简介</h3>
+            <p class="overview-text">{{ movie.overview }}</p>
           </div>
         </template>
 
-        <el-alert v-else title="登录后可提交评分" type="info" show-icon :closable="false"
-          style="margin-top:16px">
-          <router-link to="/login">去登录</router-link>
-        </el-alert>
+      </el-card>
+
+      <!-- 评分与影评区 -->
+      <el-card class="detail-card" style="margin-top: 20px">
+        <CommentSection :movie-id="movie.movie_id" :my-rating="myRating" @update:my-rating="myRating = $event" @rating-submitted="onRatingSubmitted" />
       </el-card>
     </template>
   </div>
@@ -43,14 +82,14 @@
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { Film } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 import { apiMovies } from '@/api/movies'
-import { apiRatings } from '@/api/ratings'
+import CommentSection from '@/components/CommentSection.vue'
 
 const route      = useRoute()
 const auth       = useAuthStore()
 const loading    = ref(true)
-const submitting = ref(false)
 const movie      = ref(null)
 const myRating   = ref(0)
 
@@ -64,18 +103,12 @@ onMounted(async () => {
   }
 })
 
-async function submitRating() {
-  if (!myRating.value) return
-  submitting.value = true
+async function onRatingSubmitted() {
+  // 评分提交后刷新电影平均分
   try {
-    await apiRatings.submit(movie.value.movie_id, myRating.value)
-    ElMessage.success('评分成功！感谢你的反馈')
-    // 刷新平均分
     movie.value = await apiMovies.detail(route.params.id)
   } catch (msg) {
-    ElMessage.error(typeof msg === 'string' ? msg : '评分失败')
-  } finally {
-    submitting.value = false
+    ElMessage.error('刷新数据失败')
   }
 }
 </script>
@@ -88,5 +121,104 @@ async function submitRating() {
 .stat-item   { display: flex; align-items: center; gap: 8px; }
 .stat-label  { font-weight: 600; min-width: 60px; }
 .stat-sub    { color: #999; font-size: 13px; }
-.rate-area   { display: flex; align-items: center; }
+
+.detail-layout {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 16px;
+}
+
+.poster-section {
+  flex-shrink: 0;
+  width: 300px;
+}
+
+.detail-poster {
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.detail-poster-placeholder {
+  width: 100%;
+  aspect-ratio: 2/3;
+  background: #f5f5f5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: #dcdfe6;
+}
+
+.info-section {
+  flex: 1;
+  min-width: 0;
+}
+
+.movie-info {
+  margin: 16px 0;
+}
+
+.info-row {
+  display: flex;
+  margin-bottom: 8px;
+  line-height: 1.6;
+}
+
+.info-label {
+  font-weight: 600;
+  color: #606266;
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+.info-value {
+  color: #303133;
+  flex: 1;
+}
+
+.overview-section h3 {
+  font-size: 18px;
+  margin: 0 0 12px;
+}
+
+.overview-text {
+  line-height: 1.8;
+  color: #606266;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+/* 响应式布局 */
+@media (max-width: 768px) {
+  .page {
+    padding: 12px;
+  }
+
+  .detail-layout {
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .poster-section {
+    width: 100%;
+    max-width: 250px;
+    margin: 0 auto;
+  }
+
+  .movie-title {
+    font-size: 20px;
+  }
+
+  .overview-section h3 {
+    font-size: 16px;
+  }
+}
+
+@media (min-width: 1200px) {
+  .poster-section {
+    width: 350px;
+  }
+}
 </style>

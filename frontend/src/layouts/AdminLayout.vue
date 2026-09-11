@@ -1,10 +1,6 @@
 <template>
   <el-container class="admin-layout">
     <el-aside width="200px">
-      <div class="logo">
-        <el-icon><Management /></el-icon>
-        <span>管理后台</span>
-      </div>
       <el-menu
         :default-active="activeMenu"
         router
@@ -60,16 +56,8 @@ const activeMenu = computed(() => route.path)
   background-color: #545c64;
 }
 
-.logo {
-  height: 60px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 18px;
-  font-weight: bold;
-  color: #fff;
-  gap: 8px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+.el-menu {
+  border-right: none !important;
 }
 
 .el-main {
