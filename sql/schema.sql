@@ -66,12 +66,25 @@ CREATE TABLE IF NOT EXISTS users (
 --   - 推荐结果关联查询电影详情
 -- ============================================================
 CREATE TABLE IF NOT EXISTS movies (
-  movie_id  INT          NOT NULL COMMENT 'MovieLens 原始电影 ID',
-  title     VARCHAR(500) NOT NULL COMMENT '电影标题（含年份），如 "Toy Story (1995)"',
-  genres    VARCHAR(500)          COMMENT '类型，竖线分隔，如 "Action|Drama"',
-  year      SMALLINT              COMMENT '上映年份，从 title 正则解析',
+  movie_id      INT          NOT NULL COMMENT 'MovieLens 原始电影 ID',
+  title         VARCHAR(500) NOT NULL COMMENT '电影标题（含年份），如 "Toy Story (1995)"',
+  genres        VARCHAR(500)          COMMENT '类型，竖线分隔，如 "Action|Drama"',
+  year          SMALLINT              COMMENT '上映年份，从 title 正则解析',
+  avg_rating    DECIMAL(3,2)          COMMENT '平均评分（0.00-5.00）',
+  rating_count  INT          DEFAULT 0 COMMENT '评分人数',
+  poster_url    VARCHAR(500)          COMMENT 'TMDB 海报 URL',
+  overview      TEXT                  COMMENT '电影简介',
+  director      VARCHAR(500)          COMMENT '导演',
+  writers       TEXT                  COMMENT '编剧（多个用逗号分隔）',
+  `cast`        TEXT                  COMMENT '主演（多个用逗号分隔）',
+  countries     VARCHAR(200)          COMMENT '制片国家/地区',
+  languages     VARCHAR(200)          COMMENT '语言',
+  release_date  DATE                  COMMENT '上映日期',
+  runtime       SMALLINT              COMMENT '片长（分钟）',
   PRIMARY KEY (movie_id),
-  INDEX idx_genres (genres(100))
+  INDEX idx_genres (genres(100)),
+  INDEX idx_year (year),
+  INDEX idx_rating_count (rating_count)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='电影元数据表';
 
 -- ============================================================
@@ -279,3 +292,38 @@ CREATE TABLE IF NOT EXISTS recommendations (
   INDEX idx_user_rank (user_id, `rank`) COMMENT '按用户查询 Top-N 推荐',
   INDEX idx_rec_movie (movie_id) COMMENT '按电影查询被推荐给哪些用户'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ALS 批量推荐结果表';
+
+-- ============================================================
+-- 表 8: movie_comments - 电影评论
+-- ============================================================
+-- 作用：存储用户对电影的文字评论
+--
+-- 设计要点：
+--   - 用户可以对每部电影发表多条评论
+--   - created_at 建立索引以支持按时间倒序查询
+--   - 支持软删除（通过删除记录实现）
+--
+-- 数据流向：
+--   - 写入：前端用户提交评论 → Flask API → movie_comments
+--   - 读取：前端查询电影详情页的评论列表（分页）
+--
+-- 查询场景：
+--   - 按电影 ID 分页查询评论列表
+--   - 用户删除自己的评论
+--   - 关联查询用户对该电影的评分（显示星级）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS movie_comments (
+  id          BIGINT    NOT NULL AUTO_INCREMENT COMMENT '评论主键',
+  user_id     INT       NOT NULL COMMENT '用户 ID，对应 users.id',
+  movie_id    INT       NOT NULL COMMENT '电影 ID，对应 movies.movie_id',
+  content     TEXT      NOT NULL COMMENT '评论内容',
+  created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '发表时间',
+  updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (id),
+  INDEX idx_movie_created (movie_id, created_at DESC) COMMENT '按电影查询评论，按时间倒序',
+  INDEX idx_user (user_id) COMMENT '按用户查询评论',
+  CONSTRAINT fk_comments_user FOREIGN KEY (user_id) REFERENCES users(id)
+    ON DELETE CASCADE COMMENT '用户删除时级联删除其评论',
+  CONSTRAINT fk_comments_movie FOREIGN KEY (movie_id) REFERENCES movies(movie_id)
+    ON DELETE CASCADE COMMENT '电影删除时级联删除其评论'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='电影评论表';

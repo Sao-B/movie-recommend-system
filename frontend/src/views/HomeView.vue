@@ -118,6 +118,12 @@ onMounted(() => {
   fetchMovies()
   fetchGenres()
 })
+
+// 监听 URL 变化（浏览器前进/后退）
+watch(() => route.query, (newQuery) => {
+  restoreStateFromQuery()
+  fetchMovies()
+}, { deep: true })
 </script>
 
 <style scoped>

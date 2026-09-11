@@ -39,31 +39,32 @@ def create_comment(movie_id: int):
 def list_comments(movie_id: int):
     """GET /api/movies/<id>/comments?page=1&per_page=10 — 获取评论列表（附带用户评分）"""
     from ..models import Rating
+    from sqlalchemy import and_
 
     page = max(1, request.args.get("page", 1, type=int))
     per_page = min(50, request.args.get("per_page", 10, type=int))
 
-    query = MovieComment.query.filter_by(movie_id=movie_id).order_by(
-        MovieComment.created_at.desc()
+    # 使用 LEFT JOIN 一次性查出评论和对应的用户评分
+    query = (
+        db.session.query(MovieComment, Rating.rating)
+        .outerjoin(
+            Rating,
+            and_(
+                Rating.user_id == MovieComment.user_id,
+                Rating.movie_id == movie_id
+            )
+        )
+        .filter(MovieComment.movie_id == movie_id)
+        .order_by(MovieComment.created_at.desc())
     )
 
     pagination = query.paginate(page=page, per_page=per_page, error_out=False)
 
-    # 获取所有评论用户的评分
-    user_ids = [c.user_id for c in pagination.items]
-    ratings_dict = {}
-    if user_ids:
-        ratings = Rating.query.filter(
-            Rating.user_id.in_(user_ids),
-            Rating.movie_id == movie_id
-        ).all()
-        ratings_dict = {r.user_id: r.rating for r in ratings}
-
     # 组装评论数据，附带评分
     comments = []
-    for comment in pagination.items:
+    for comment, user_rating in pagination.items:
         comment_data = comment.to_dict()
-        comment_data['user_rating'] = ratings_dict.get(comment.user_id)
+        comment_data['user_rating'] = user_rating
         comments.append(comment_data)
 
     return jsonify({

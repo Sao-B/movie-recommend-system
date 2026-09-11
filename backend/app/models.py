@@ -8,6 +8,15 @@ def _utcnow():
     return datetime.now(timezone.utc)
 
 
+def _to_iso_utc(dt):
+    """将 datetime 转换为带 UTC 时区的 ISO 格式字符串"""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
 class User(db.Model):
     __tablename__ = "users"
 
@@ -91,7 +100,7 @@ class Rating(db.Model):
             "user_id":  self.user_id,
             "movie_id": self.movie_id,
             "rating":   self.rating,
-            "rated_at": self.rated_at.isoformat() if self.rated_at else None,
+            "rated_at": _to_iso_utc(self.rated_at),
         }
 
 
@@ -159,6 +168,6 @@ class MovieComment(db.Model):
             "username":   self.user.username if self.user else None,
             "movie_id":   self.movie_id,
             "content":    self.content,
-            "created_at": self.created_at.replace(tzinfo=timezone.utc).isoformat() if self.created_at else None,
-            "updated_at": self.updated_at.replace(tzinfo=timezone.utc).isoformat() if self.updated_at else None,
+            "created_at": _to_iso_utc(self.created_at),
+            "updated_at": _to_iso_utc(self.updated_at),
         }

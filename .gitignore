@@ -56,3 +56,9 @@ logs/
 # Claude Code / Agent 框架（非项目代码）
 .agents/
 .claude/skills/
+
+# 工具脚本（包含凭据，不提交）
+check_db.py
+fetch_posters.py
+import_movie_stats.py
+sync_movie_stats.py

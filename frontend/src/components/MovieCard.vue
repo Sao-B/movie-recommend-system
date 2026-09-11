@@ -2,11 +2,11 @@
   <el-card class="movie-card" shadow="hover" @click="$router.push('/movies/' + movie.movie_id)">
     <div class="poster-container">
       <img
-        v-if="movie.poster_url"
+        v-if="movie.poster_url && !imageError"
         :src="movie.poster_url"
         :alt="movie.title"
         class="poster-img"
-        @error="handleImageError"
+        @error="imageError = true"
       />
       <div v-else class="poster-placeholder">
         <el-icon><Film /></el-icon>
@@ -48,13 +48,15 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
 import { Film } from '@element-plus/icons-vue'
 
 const props = defineProps({
   movie:          { type: Object, required: true },
   predictedRating:{ type: [Number, String], default: null },
 })
+
+const imageError = ref(false)
 
 // 将预测评分归一化到 0-5 范围（用于显示星星）
 const normalizedRating = computed(() => {
@@ -66,10 +68,6 @@ const normalizedRating = computed(() => {
   return Math.max(0.5, Math.min(5.0, rating))
 })
 
-function handleImageError(e) {
-  e.target.style.display = 'none'
-  e.target.parentElement.innerHTML = '<div class="poster-placeholder"><i class="el-icon-film"></i></div>'
-}
 </script>
 
 <style scoped>

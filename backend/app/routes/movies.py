@@ -5,7 +5,9 @@ from ..models import Movie, Rating
 
 movies_bp = Blueprint("movies", __name__)
 
+# 常量定义
 _PAGE_SIZE = 20
+MIN_RATING_COUNT_FOR_POPULAR = 100  # 热门电影的最小评分人数阈值
 
 
 @movies_bp.get("/")
@@ -30,8 +32,8 @@ def list_movies():
     # 排序逻辑：使用 movies 表中的 MovieLens 统计数据
     if sort == "popular":
         # 按平均评分排序（主要），评分人数为次要
-        # 过滤掉评分人数少于 100 的电影，避免小样本偏差
-        query = query.filter(Movie.rating_count >= 100)
+        # 过滤掉评分人数少于阈值的电影，避免小样本偏差
+        query = query.filter(Movie.rating_count >= MIN_RATING_COUNT_FOR_POPULAR)
         query = query.order_by(
             func.coalesce(Movie.avg_rating, 0).desc(),
             func.coalesce(Movie.rating_count, 0).desc()

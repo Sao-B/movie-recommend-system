@@ -79,10 +79,12 @@ watch(dropdownVisible, (isVisible) => {
 function handleCommand(command) {
   switch (command) {
     case 'profile':
-      router.push('/profile')
+      ElMessage.info('个人主页功能开发中')
+      // router.push('/profile')
       break
     case 'settings':
-      router.push('/settings')
+      ElMessage.info('设置功能开发中')
+      // router.push('/settings')
       break
     case 'logout':
       handleLogout()
