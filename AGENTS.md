@@ -158,6 +158,33 @@ npm run dev
 - 前端评分提交后写入 `ratings` 表，下次离线训练时纳入数据集。
 - 伪分布式 Hadoop 需要本机配置 SSH 免密登录（`ssh-keygen` + `authorized_keys`）。
 
+---
+
+## 上下文忽略清单（所有 Agent 必读）
+
+无论使用哪个 Agent / CLI（DSH / Codex / Claude Code / Cursor / Aider…）接手本项目，都必须跳过下列路径：**不读取、不注入上下文、不作为实现参考**。
+
+完整清单的唯一事实来源是 **`.aiignore`**（跨工具通用）。以下为高频雷区摘要：
+
+| 路径 / 模式 | 原因 |
+|------|------|
+| `poster_fetch_full.log` | 抓取日志，**5.8 MB**，最容易一次性吃满上下文 |
+| `poster_fetch.log` | 同上，123 KB |
+| `poster_fetch_progress.txt` | 进度快照，非源码 |
+| `arch_diagram.html` / `thesis_draft.txt` | 生成物与论文草稿，与业务代码无关 |
+| `.claude/settings.local.json`、`.claude/plans/` | 本机权限配置与会话草稿 |
+| `.agents/`、`.claude/skills/` | 技能框架文件，非业务代码 |
+| `.cursor/`、`.aider*`、`.continue/`、`.cody/` | 其他工具的本地配置 |
+| `data/raw/`、`data/processed/`、`*.csv`、`*.dat` | 数据集过大 |
+| `config.yaml`、`*.pem`、`*.key`、`credentials.json`、`.npmrc`、`.aws/`、`.ssh/`、`.env` | 凭据与密钥，**禁止读取或输出** |
+
+工具配置指向同一份清单，不重复维护：
+
+- `AGENTS.md`（本节）— 通用 Agent 入口
+- `.aiignore` — 完整清单，唯一事实来源
+- `.claudeignore.md` — 指向 `.aiignore` 的指针
+- `.gitignore` — git 层兜底
+
 <!-- superpowers-zh:begin (do not edit between these markers) -->
 # Superpowers-ZH 中文增强版
 
@@ -172,7 +199,7 @@ npm run dev
 
 ## 可用 Skills
 
-Skills 位于 `.Codex/skills/` 目录，每个 skill 有独立的 `SKILL.md` 文件。
+Skills 位于 `.agents/skills/` 目录，每个 skill 有独立的 `SKILL.md` 文件。
 
 - **brainstorming**: 在任何创造性工作之前必须使用此技能——创建功能、构建组件、添加功能或修改行为。在实现之前先探索用户意图、需求和设计。
 - **chinese-code-review**: 中文 review 沟通参考——话术模板、分级标注（必须修复/建议修改/仅供参考）、国内团队常见反模式应对。仅在用户显式 /chinese-code-review 时调用，不要根据上下文自动触发。

@@ -8,6 +8,7 @@ from .routes.recommendations import rec_bp
 from .routes.ratings import ratings_bp
 from .routes.admin import admin_bp
 from .routes.comments import comments_bp
+from .routes.profile import profile_bp
 
 
 def create_app(config_obj=None):
@@ -49,6 +50,7 @@ def create_app(config_obj=None):
     app.register_blueprint(ratings_bp, url_prefix="/api/ratings")
     app.register_blueprint(admin_bp,   url_prefix="/api/admin")
     app.register_blueprint(comments_bp, url_prefix="/api")
+    app.register_blueprint(profile_bp, url_prefix="/api/profile")
 
     # 全局错误处理
     @app.errorhandler(404)

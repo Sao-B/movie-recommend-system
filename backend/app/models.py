@@ -23,6 +23,8 @@ class User(db.Model):
     id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
     username      = db.Column(db.String(50), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
+    avatar_url    = db.Column(db.String(500))
+    bio           = db.Column(db.Text)
     created_at    = db.Column(db.DateTime, default=_utcnow)
     role          = db.Column(db.String(16), nullable=False, default='user', server_default='user')
 
@@ -37,7 +39,14 @@ class User(db.Model):
         return self.role == 'admin'
 
     def to_dict(self):
-        return {"id": self.id, "username": self.username, "role": self.role}
+        return {
+            "id": self.id,
+            "username": self.username,
+            "role": self.role,
+            "avatar_url": self.avatar_url,
+            "bio": self.bio,
+            "created_at": _to_iso_utc(self.created_at)
+        }
 
 
 class Movie(db.Model):

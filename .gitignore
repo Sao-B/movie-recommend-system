@@ -49,16 +49,18 @@ Thumbs.db
 # Logs
 *.log
 logs/
+poster_fetch_progress.txt
+fetch_posters_progress.txt
 
 # MySQL
 *.sql.bak
 
-# Claude Code / Agent 框架（非项目代码）
+# Agent 框架本地文件（非项目代码）
+# 注意：.aiignore 是跨 Agent 的上下文忽略清单，需要提交，不要加进这里
+# .claude/skills 是指向 .agents/skills 的目录联接（junction），两者内容同一份
 .agents/
 .claude/skills/
+.claude/plans/
 
-# 工具脚本（包含凭据，不提交）
-check_db.py
-fetch_posters.py
-import_movie_stats.py
-sync_movie_stats.py
+# 工具脚本已改为经 config_loader.py 从 config.yaml 读取凭据，不再含敏感信息，
+# 因此正常纳入版本库。此前把它们写进这里无效——gitignore 管不了已跟踪的文件。

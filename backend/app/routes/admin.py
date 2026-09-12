@@ -33,17 +33,59 @@ def get_stats():
 
     active_model = ModelVersion.query.filter_by(status='active').first()
 
+    # 最近10条评分
+    recent_ratings_query = db.session.query(
+        Rating.id,
+        Rating.rating,
+        User.username,
+        Movie.title.label('movie_title')
+    ).join(User, Rating.user_id == User.id)\
+     .join(Movie, Rating.movie_id == Movie.movie_id)\
+     .order_by(Rating.rated_at.desc())\
+     .limit(10).all()
+
+    recent_ratings = [
+        {
+            "id": r.id,
+            "rating": float(r.rating),
+            "username": r.username,
+            "movie_title": r.movie_title
+        }
+        for r in recent_ratings_query
+    ]
+
+    # 热门电影 Top 10（按评分数量排序）
+    top_movies_query = db.session.query(
+        Movie.movie_id,
+        Movie.title,
+        Movie.rating_count
+    ).filter(Movie.rating_count > 0)\
+     .order_by(Movie.rating_count.desc())\
+     .limit(10).all()
+
+    top_movies = [
+        {
+            "movie_id": m.movie_id,
+            "title": m.title,
+            "rating_count": m.rating_count
+        }
+        for m in top_movies_query
+    ]
+
     return jsonify({
         "user_count": user_count,
         "movie_count": movie_count,
         "rating_count": rating_count,
         "recommendation_count": recommendation_count,
+        "active_model_version": active_model.version if active_model else None,
         "active_model": {
             "version": active_model.version,
             "rank": active_model.rank,
             "reg_param": active_model.reg_param,
             "activated_at": active_model.activated_at.isoformat() if active_model.activated_at else None
-        } if active_model else None
+        } if active_model else None,
+        "recent_ratings": recent_ratings,
+        "top_movies": top_movies
     })
 
 

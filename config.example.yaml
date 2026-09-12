@@ -1,4 +1,6 @@
-# Copy this file to config.yaml and replace all placeholder values locally.
+# 复制本文件为 config.yaml，再把所有占位值替换为真实值。
+# config.yaml 已被 .gitignore / .aiignore 忽略：既不会进入版本库，也不会进入 AI 上下文。
+# 所有代码与工具脚本都必须从这里读配置，禁止硬编码凭据。
 
 # Hadoop / HDFS
 hdfs:
@@ -16,7 +18,7 @@ mysql:
   database: movie_recommend
   charset: utf8mb4
 
-# PySpark ALS parameters
+# PySpark ALS 参数
 als:
   rank: 50
   max_iter: 10
@@ -24,6 +26,8 @@ als:
   cold_start_strategy: drop
   train_ratio: 0.8
   top_n: 20
+  # MovieLens user_id 与系统用户 id 之间的偏移量，避免两者冲突
+  ml_user_offset: 10000000
 
 # Flask
 flask:
@@ -37,3 +41,19 @@ cors:
   origins:
     - "http://localhost:5173"
     - "http://127.0.0.1:5173"
+
+# TMDB（fetch_posters.py 抓取海报 / 简介 / 演职员用）
+tmdb:
+  # 在 https://www.themoviedb.org/settings/api 申请，v3 API Key 为 32 位十六进制
+  api_key: "YOUR_TMDB_API_KEY_HERE"
+  base_url: "https://api.themoviedb.org/3"
+  poster_base_url: "https://image.tmdb.org/t/p/w500"
+
+# 虚拟机（sync_movie_stats.py 从 VM 同步评分统计用；仅本地开发需要）
+vm:
+  host: "192.168.10.102"
+  ssh_user: "change_me"
+  ssh_password: "change_me"
+  mysql_user: "change_me"
+  mysql_password: "change_me"
+  mysql_database: movie_recommend
