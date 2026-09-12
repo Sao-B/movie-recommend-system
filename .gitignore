@@ -61,6 +61,7 @@ fetch_posters_progress.txt
 .agents/
 .claude/skills/
 .claude/plans/
+.claude/settings.local.json
 
 # 工具脚本已改为经 config_loader.py 从 config.yaml 读取凭据，不再含敏感信息，
 # 因此正常纳入版本库。此前把它们写进这里无效——gitignore 管不了已跟踪的文件。
