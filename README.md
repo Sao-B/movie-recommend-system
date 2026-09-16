@@ -273,6 +273,17 @@ spark-submit --master local[*] spark/preprocess.py
 >
 > 当前不要把这条命令当作可重复的生产刷新流程；应先改为 staging/upsert 或设计明确的元数据刷新迁移。
 
+### 7.3.1 评分统计聚合（ratings_clean.csv）
+
+对同一份评分明细做「按电影聚合」，产出 `data/raw/ratings_clean.csv`（84,432 行 × 11 列：评分条数、均值、中位数、标准差、极值、四分位数等）：
+
+```bash
+backend/venv/Scripts/python.exe scripts/build_ratings_clean.py --check   # 与现有产物比对
+backend/venv/Scripts/python.exe scripts/build_ratings_clean.py --force   # 重新生成
+```
+
+其下游 `scripts/import_movie_stats.py` 把 `rating_mean` / `rating_count` 两列回填到 `movies` 表，支撑首页热门榜的贝叶斯加权排序与电影卡片均分。它与详情页评分统计（`movie_rating_stats` 表，见 6.1）同源、行数一致，但用途不同：一个只喂 `movies` 两列，一个带五档分布。
+
 ### 7.4 运行 ALS 训练
 
 ```bash

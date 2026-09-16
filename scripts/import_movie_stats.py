@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """从 ratings_clean.csv 导入电影评分统计到 MySQL"""
 import csv
+import os
+import sys
 import pymysql
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config_loader import mysql_kwargs
 
 conn = pymysql.connect(**mysql_kwargs())
@@ -10,7 +13,7 @@ conn = pymysql.connect(**mysql_kwargs())
 cursor = conn.cursor()
 
 print("正在读取 ratings_clean.csv...")
-with open('data/raw/ratings_clean.csv', 'r', encoding='utf-8') as f:
+with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'raw', 'ratings_clean.csv'), 'r', encoding='utf-8') as f:
     reader = csv.DictReader(f)
 
     batch = []

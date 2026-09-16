@@ -98,10 +98,12 @@ Project/
 │   ├── init_hdfs.sh       # 创建 HDFS 目录并上传数据
 │   ├── run_training.sh    # 提交 Spark 训练作业
 │   ├── start_backend.py   # 可复用的 Flask 启动入口
-│   └── start_dev.sh       # 联合启动（自动探测 backend/venv，兼容 bin/ 与 Scripts/）
+│   ├── start_dev.sh       # 联合启动（自动探测 backend/venv，兼容 bin/ 与 Scripts/）
+│   ├── build_ratings_clean.py # 从 ratings.csv 聚合出 ratings_clean.csv（--check 可比对）
+│   ├── build_ml_rating_stats.py # 聚合五档分布写入 movie_rating_stats
+│   └── import_movie_stats.py # 把 ratings_clean.csv 的均值/人数回填 movies 表
 │
 ├── check_db.py            # 各表行数与活跃模型检查
-├── import_movie_stats.py  # 从 MovieLens 统计 CSV 回填 avg_rating / rating_count
 ├── sync_movie_stats.py    # 经 SSH 从虚拟机同步评分统计
 ├── fetch_posters.py       # 按 TMDB API 回填海报与简介等富化列
 └── arch_diagram.html      # 系统架构图（生成物，不在上下文里注入）

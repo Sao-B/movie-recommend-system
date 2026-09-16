@@ -961,6 +961,26 @@ SELECT * FROM movies WHERE year = 1995 LIMIT 5;
 >
 > **不要把这条命令当作可重复的生产刷新流程**，应改为 staging/upsert。
 
+### 4.3 评分统计聚合（`ratings_clean.csv`）
+
+脚本：[`scripts/build_ratings_clean.py`](../scripts/build_ratings_clean.py)
+
+对 `data/raw/ratings.csv`（3200 万条明细）按 movieId 做单遍流式聚合，产出
+`data/raw/ratings_clean.csv`（84,432 行 × 11 列：`rating_count` / `rating_mean` /
+`rating_median` / `rating_std` / 极值 / `rating_sum` / `rating_range` / 四分位数）：
+
+```bash
+backend/venv/Scripts/python.exe scripts/build_ratings_clean.py --check   # 与现有产物逐单元格比对
+backend/venv/Scripts/python.exe scripts/build_ratings_clean.py --force   # 重新生成
+```
+
+下游 [`scripts/import_movie_stats.py`](../scripts/import_movie_stats.py) 把
+`rating_mean` / `rating_count` 两列回填 `movies` 表，支撑首页热门榜的贝叶斯加权
+排序与电影卡片均分。它与详情页评分统计（`movie_rating_stats` 表，见 3.x 表说明与
+`build_ml_rating_stats.py`）**同源、行数一致**，但粒度不同：本文件只服务 `movies`
+两列回填，五档分布走 `build_ml_rating_stats.py`。注意单条评分的电影 `rating_std`
+为空（样本标准差无定义）。
+
 ---
 
 ## 五、离线 ALS 训练实现
@@ -1788,5 +1808,3 @@ git diff --check                               # 空白错误
 - [Vue 3 文档](https://cn.vuejs.org/)
 
 ---
-
-**文档版本：** v1.2 · **更新时间：** 2026-09-14（v1.1 按源码全面核对修订；v1.2 修正 4.2 的外键归属与 5.8 的训练示例输出）

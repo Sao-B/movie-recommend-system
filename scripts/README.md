@@ -51,6 +51,9 @@ vm   = vm_config()                         # 虚拟机 SSH / MySQL
 - `run_training.sh` - 提交 Spark 训练作业
 - `start_dev.sh` - 启动前后端开发服务器
 - `start_backend.py` - 启动 Flask 后端
+- `build_ratings_clean.py` - 从 `data/raw/ratings.csv` 聚合出 `ratings_clean.csv`（`--check` 与现有产物比对，`--force` 重新生成）
+- `build_ml_rating_stats.py` - 聚合五档评分分布写入 `movie_rating_stats` 表
+- `import_movie_stats.py` - 把 `ratings_clean.csv` 的均值/评分人数回填 `movies` 表
 
-另有一组辅助脚本位于**项目根目录**（不在本目录）：
-`check_db.py`、`fetch_posters.py`、`import_movie_stats.py`、`sync_movie_stats.py`。
+另一组辅助脚本位于**项目根目录**（不在本目录）：
+`check_db.py`、`fetch_posters.py`、`sync_movie_stats.py`。
