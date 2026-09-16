@@ -28,6 +28,7 @@ const MODES = {
 }
 const KEYS = Object.keys(MODES)
 const CELL = 37 // 格高 36 + 1px 分隔线
+const STEP = 290 // 每级收缩时长：与 CSS transition 一致，两段严丝合缝保持匀速
 
 const open = ref(false)
 const busy = ref(false)
@@ -69,12 +70,13 @@ function collapse() {
       botStyle.value = {}
       open.value = false
       busy.value = false
-    }, 290)
-  }, 290)
+    }, STEP)
+  }, STEP)
 }
 
-// 点选模式：甩棍式逐级收起——内容每步向上滚一格、底边同步上升一格，
-// 收起落位后才真正 setMode（全页换肤发生在动画结束时）
+// 点选模式：甩棍式逐级收起——内容每步向上匀速滚一格、底边同步上升一格。
+// 收尾用交叉淡入：先 setMode 让顶格内容换成新图标（此刻透明不可见），
+// 下一帧顶格淡入、飞入层保持覆盖，新图标显形后才清理，避免落位闪烁。
 function pick(key) {
   if (busy.value || !open.value) return
   if (key === curKey.value) { collapse(); return }
@@ -87,7 +89,7 @@ function pick(key) {
     setTimeout(() => {
       botStyle.value = { transform: `translateY(-${CELL * 2}px)`, zIndex: 2 }
       midStyle.value = { opacity: 0 }
-    }, 140)
+    }, STEP)
   } else {
     // 第二格被选中：第三格向上滑走但不取代
     botStyle.value = { transform: `translateY(-${CELL}px)`, opacity: 0 }
@@ -97,21 +99,26 @@ function pick(key) {
   setTimeout(() => {
     boxH.value = '36px'
     if (replacing) {
-      botStyle.value = { transform: `translateY(-${CELL * 3}px)`, zIndex: 2 }
+      // 停在顶格位置（-74），不是 -111：飞入图标要落位覆盖，不能滚出顶部
+      botStyle.value = { transform: `translateY(-${CELL * 2}px)`, zIndex: 2 }
     } else {
       midStyle.value = { transform: `translateY(-${CELL}px)`, zIndex: 2 }
     }
     topStyle.value = { opacity: 0 }
     setTimeout(() => {
       theme.setMode(key)
-      topStyle.value = {}
-      midStyle.value = {}
-      botStyle.value = {}
-      boxH.value = ''
-      open.value = false
-      busy.value = false
-    }, 290)
-  }, 290)
+      requestAnimationFrame(() => {
+        topStyle.value = {}
+        setTimeout(() => {
+          midStyle.value = {}
+          botStyle.value = {}
+          boxH.value = ''
+          open.value = false
+          busy.value = false
+        }, 200)
+      })
+    }, STEP)
+  }, STEP)
 }
 
 // 展开时点击组件以外的地方，视为取消收起
@@ -141,7 +148,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   background: var(--app-bg-surface);
   border: 1px solid var(--app-border);
   border-radius: 9px;
-  transition: height .27s ease;
+  /* linear：两段收缩严丝合缝，整条匀速滑动，没有先快后慢的顿挫 */
+  transition: height .29s linear;
   z-index: 20;
 }
 
@@ -179,7 +187,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform .27s ease, opacity .27s ease;
+  transition: transform .29s linear, opacity .18s linear;
 }
 
 .tm .cur-sq {
