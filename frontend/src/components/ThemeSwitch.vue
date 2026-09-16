@@ -1,6 +1,6 @@
 <template>
   <div class="tm-wrap" @click.stop>
-    <div class="tm" :style="{ height: boxH }">
+    <div class="tm" :style="{ height: boxH, transition: tmTrans }">
       <button class="sq cur-sq" :title="MODES[curKey].name + '（点击收起）'" @click="onTop">
         <span class="ic" :style="topStyle"><el-icon><component :is="MODES[curKey].icon" /></el-icon></span>
       </button>
@@ -27,12 +27,14 @@ const MODES = {
   system: { name: '跟随系统', icon: Monitor },
 }
 const KEYS = Object.keys(MODES)
-const CELL = 37 // 格高 36 + 1px 分隔线
-const STEP = 290 // 每级收缩时长：与 CSS transition 一致，两段严丝合缝保持匀速
+const CELL = 37   // 格高 36 + 1px 分隔线
+const GROW_MS = 300   // 展开时长
+const SHRINK_MS = 580 // 收缩时长：一次连续动画滚过两格，匀速无衔接点
 
 const open = ref(false)
 const busy = ref(false)
 const boxH = ref('')
+const tmTrans = ref('height .3s linear')
 const midKey = ref('light')
 const botKey = ref('dark')
 const topStyle = ref({})
@@ -51,80 +53,66 @@ watch(curKey, () => {
 
 function onTop() {
   if (busy.value) return
-  if (open.value) { collapse(); return }
-  open.value = true
+  if (open.value) { shrink(null); return }
+  // 展开：重置上一次收起遗留的飞入样式，再向下生长
+  midStyle.value = {}
+  botStyle.value = {}
+  topStyle.value = {}
+  tmTrans.value = `height ${GROW_MS}ms linear`
   boxH.value = '110px'
+  open.value = true
 }
 
-// 点顶格（当前模式）= 取消：逐级收起，不换模式
-function collapse() {
+// 收起（一次连续动画）：图标流整体向上滚两格，容器底边同步升两格。
+// selectedKey 为 null = 点顶格取消，图标内容不变。
+// 落位后：先 setMode（顶格内容换成新图标，此刻它仍透明），下一帧顶格淡入，
+// 飞入层保持覆盖到新图标显形才清理——全程按钮区域不会出现空档或跳变。
+function shrink(selectedKey) {
   busy.value = true
-  botStyle.value = { transform: `translateY(-${CELL}px)`, opacity: 0 }
-  boxH.value = '74px'
+  open.value = false
+  tmTrans.value = `height ${SHRINK_MS}ms linear`
+
+  if (selectedKey && selectedKey === botKey.value) {
+    // 选的是第三格：让它顶替第二格的位置参与上滚（交换内容，瞬时无感）
+    const t = midKey.value
+    midKey.value = botKey.value
+    botKey.value = t
+  }
+
+  // 选中图标（中格）滚入顶格；旧顶格图标淡出让位
+  midStyle.value = { transform: `translateY(-${CELL}px)`, zIndex: 2 }
+  topStyle.value = { opacity: 0 }
+  // 落选图标跟在后面上滑，行进到后半程才消失
+  botStyle.value = {
+    transform: `translateY(-${CELL}px)`,
+    opacity: 0,
+    transition: `transform ${SHRINK_MS}ms linear, opacity ${Math.round(SHRINK_MS / 2)}ms linear ${Math.round(SHRINK_MS / 2)}ms`,
+  }
+  boxH.value = '36px'
+
   setTimeout(() => {
-    boxH.value = '36px'
-    midStyle.value = { transform: `translateY(-${CELL}px)`, opacity: 0 }
-    setTimeout(() => {
-      boxH.value = ''
-      midStyle.value = {}
-      botStyle.value = {}
-      open.value = false
-      busy.value = false
-    }, STEP)
-  }, STEP)
+    if (selectedKey) theme.setMode(selectedKey)
+    requestAnimationFrame(() => {
+      topStyle.value = {} // 顶格新图标淡入（.ic 自带 opacity 过渡）
+      setTimeout(() => {
+        midStyle.value = {}
+        botStyle.value = {}
+        busy.value = false
+      }, 250)
+    })
+  }, SHRINK_MS + 30)
 }
 
-// 点选模式：甩棍式逐级收起——内容每步向上匀速滚一格、底边同步上升一格。
-// 收尾用交叉淡入：先 setMode 让顶格内容换成新图标（此刻透明不可见），
-// 下一帧顶格淡入、飞入层保持覆盖，新图标显形后才清理，避免落位闪烁。
+// 点选模式
 function pick(key) {
   if (busy.value || !open.value) return
-  if (key === curKey.value) { collapse(); return }
-  busy.value = true
-  const replacing = key === botKey.value
-
-  if (replacing) {
-    // 第三格图标向上取代第二格
-    botStyle.value = { transform: `translateY(-${CELL}px)` }
-    setTimeout(() => {
-      botStyle.value = { transform: `translateY(-${CELL * 2}px)`, zIndex: 2 }
-      midStyle.value = { opacity: 0 }
-    }, STEP)
-  } else {
-    // 第二格被选中：第三格向上滑走但不取代
-    botStyle.value = { transform: `translateY(-${CELL}px)`, opacity: 0 }
-  }
-  boxH.value = '74px'
-
-  setTimeout(() => {
-    boxH.value = '36px'
-    if (replacing) {
-      // 停在顶格位置（-74），不是 -111：飞入图标要落位覆盖，不能滚出顶部
-      botStyle.value = { transform: `translateY(-${CELL * 2}px)`, zIndex: 2 }
-    } else {
-      midStyle.value = { transform: `translateY(-${CELL}px)`, zIndex: 2 }
-    }
-    topStyle.value = { opacity: 0 }
-    setTimeout(() => {
-      theme.setMode(key)
-      requestAnimationFrame(() => {
-        topStyle.value = {}
-        setTimeout(() => {
-          midStyle.value = {}
-          botStyle.value = {}
-          boxH.value = ''
-          open.value = false
-          busy.value = false
-        }, 200)
-      })
-    }, STEP)
-  }, STEP)
+  shrink(key)
 }
 
 // 展开时点击组件以外的地方，视为取消收起
 function onDocClick(e) {
   if (!open.value || busy.value) return
-  collapse()
+  shrink(null)
 }
 onMounted(() => document.addEventListener('click', onDocClick))
 onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
@@ -148,8 +136,6 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   background: var(--app-bg-surface);
   border: 1px solid var(--app-border);
   border-radius: 9px;
-  /* linear：两段收缩严丝合缝，整条匀速滑动，没有先快后慢的顿挫 */
-  transition: height .29s linear;
   z-index: 20;
 }
 
@@ -187,7 +173,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform .29s linear, opacity .18s linear;
+  transition: transform .58s linear, opacity .25s linear;
 }
 
 .tm .cur-sq {
