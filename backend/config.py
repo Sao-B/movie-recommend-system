@@ -43,6 +43,10 @@ class Config:
     FLASK_PORT = int(_flask["port"])
     FLASK_DEBUG = bool(_flask["debug"])
 
+    # 用户头像上传目录（config.yaml 的 flask.avatar_upload_dir 可覆盖；
+    # 留空时路由按 backend/uploads/avatars 兜底）
+    AVATAR_UPLOAD_DIR = _flask.get("avatar_upload_dir")
+
     # ALS / online recommendation
     ALS_TOP_N = int(_als.get("top_n", 20))
     ALS_REG_PARAM = float(_als.get("reg_param", 0.1))

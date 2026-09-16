@@ -35,6 +35,9 @@ data/processed/
 hadoop/tmp/
 hadoop/dfs/
 
+# 用户上传的头像（运行时数据，不入库）
+backend/uploads/
+
 # IDE
 .vscode/
 .idea/

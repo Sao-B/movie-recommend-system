@@ -1416,7 +1416,9 @@ def get_recommendations():
 | `POST` | `/api/ratings/` | 新增或更新评分（取值范围 **0.5 ~ 5.0**，0 与其它越界值一律 400） | 是 |
 | `DELETE` | `/api/ratings/<movie_id>` | 删除自己对该电影的评分（**只删评分**，影评留在原地退成「仅自己可见」；影评卡片「删除 → 保留影评」会调它） | 是 |
 | `GET` | `/api/recommendations/` | 当前用户推荐（在线优先） | 是 |
-| `GET/PUT` | `/api/profile/info` | 个人信息读取/修改（用户名、头像、签名） | 是 |
+| `GET/PUT` | `/api/profile/info` | 个人信息读取/修改（用户名、签名；头像走上传接口，PUT 仍兼容外链 `avatar_url`） | 是 |
+| `POST` | `/api/profile/avatar` | 上传头像（multipart，字段名 `file`，jpg/png/gif/webp 且 ≤2MB；存 `backend/uploads/avatars`，同名换新图并删旧图） | 是 |
+| `GET` | `/api/profile/avatar/<filename>` | 读取头像图片本身（文件名带随机串，故不鉴权） | 否 |
 | `GET` | `/api/profile/stats` | 观影统计（评分分布、最爱类型/导演） | 是 |
 | `GET` | `/api/profile/comments` | 我的评论（分页排序，附带我在该片评分的星级） | 是 |
 | `GET` | `/api/admin/stats` | 系统统计（用户/电影/评分/推荐量、active 模型） | admin |

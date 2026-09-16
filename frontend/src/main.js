@@ -12,6 +12,11 @@ import { useThemeStore } from '@/stores/theme'
 
 const app = createApp(App)
 
+// 临时调试：挂载失败的错误收集（排查 ThemeSwitch 白屏）
+window.__errs = []
+window.addEventListener('error', (e) => window.__errs.push('ERR: ' + ((e.error && e.error.stack) || e.message)))
+window.addEventListener('unhandledrejection', (e) => window.__errs.push('REJ: ' + String(e.reason).slice(0, 300)))
+
 for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
   app.component(key, component)
 }

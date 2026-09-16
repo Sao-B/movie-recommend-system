@@ -60,3 +60,4 @@ data/processed/
 # ── 6. 运行时目录 ──
 hadoop/tmp/
 hadoop/dfs/
+backend/uploads/               # 用户上传的头像图片（运行时数据，二进制，不必进上下文）

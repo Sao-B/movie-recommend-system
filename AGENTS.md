@@ -74,7 +74,7 @@ Project/
 │           ├── ratings.py         # 评分提交与历史（写 user_ratings）
 │           ├── recommendations.py # 推荐列表
 │           ├── comments.py        # 电影评论
-│           ├── profile.py         # 个人主页（资料/统计/评分/评论）
+│           ├── profile.py         # 个人主页（资料/统计/评论 + 头像上传与读取）
 │           └── admin.py           # 管理后台（用户/电影/评分/模型）
 │
 ├── frontend/              # Vue 3 SPA
@@ -227,6 +227,7 @@ npm run build --prefix frontend
 - 集群需要本机配置 SSH 免密登录（`ssh-keygen` + `authorized_keys`）。
 - `spark/preprocess.py` 自 2026-09-16 起走 staging/upsert（`movies_staging` 暂存 + `ON DUPLICATE KEY UPDATE`），可重复执行，不会清空评分统计与 TMDB 富化列（详见 README 第 7.3 节）。
 - `config.yaml` 按忽略清单不读取；需要了解配置项时看 `config.example.yaml`。
+- 用户头像走「点头像上传本地图片」：文件落在 `backend/uploads/avatars/`（已进 `.gitignore` 与 `.aiignore`），`users.avatar_url` 里存的是 `/api/profile/avatar/<文件名>` 相对地址；目录可用 `config.yaml` 的 `flask.avatar_upload_dir` 覆盖。
 
 ---
 
@@ -244,6 +245,7 @@ npm run build --prefix frontend
 | `.agents/`、`.claude/skills/` | 技能框架文件，非业务代码 |
 | `.cursor/`、`.aider*`、`.continue/`、`.cody/` | 其他工具的本地配置 |
 | `data/raw/`、`data/processed/`、`*.csv`、`*.dat` | 数据集过大 |
+| `backend/uploads/`、`hadoop/tmp/`、`hadoop/dfs/` | 运行时目录（头像图片、HDFS/YARN 本地数据），不是源码 |
 | `config.yaml`、`*.pem`、`*.key`、`credentials.json`、`.npmrc`、`.aws/`、`.ssh/`、`.env` | 凭据与密钥，**禁止读取或输出** |
 
 工具配置指向同一份清单，不重复维护：

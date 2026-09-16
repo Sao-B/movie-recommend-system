@@ -23,6 +23,13 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('user')
   }
 
+  // 个人主页改完用户名 / 头像后调用：同步 header 里的显示名，并写回 localStorage，
+  // 否则刷新页面又会读回旧值
+  function updateUser(patch) {
+    if (!user.value) return
+    _persist(token.value, { ...user.value, ...patch })
+  }
+
   async function login(username, password) {
     const data = await apiAuth.login(username, password)
     _persist(data.token, data.user)
@@ -35,5 +42,5 @@ export const useAuthStore = defineStore('auth', () => {
     return data.user
   }
 
-  return { token, user, isLoggedIn, isAdmin, login, register, logout }
+  return { token, user, isLoggedIn, isAdmin, login, register, logout, updateUser }
 })

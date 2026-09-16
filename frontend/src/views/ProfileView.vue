@@ -3,57 +3,120 @@
     <!-- 用户信息卡片 -->
     <el-card class="user-info-card">
       <div class="user-info-content">
+        <!-- 头像：点一下选本地图片，选完立刻上传 -->
         <div class="avatar-section">
-          <el-avatar :size="100" :src="userInfo.avatar_url" class="user-avatar">
-            <template #default>
-              <span class="avatar-text">{{ userInfo.username?.charAt(0).toUpperCase() }}</span>
-            </template>
-          </el-avatar>
-          <el-button size="small" @click="editDialogVisible = true" class="edit-btn">
-            编辑资料
-          </el-button>
+          <el-tooltip
+            content="点击更换头像"
+            placement="bottom"
+            :show-after="200"
+            :disabled="avatarUploading"
+          >
+            <div
+              class="avatar-clickable"
+              :class="{ 'is-uploading': avatarUploading }"
+              @click="openAvatarPicker"
+            >
+              <el-avatar :size="100" :src="userInfo.avatar_url" class="user-avatar">
+                <template #default>
+                  <span class="avatar-text">{{ userInfo.username?.charAt(0).toUpperCase() }}</span>
+                </template>
+              </el-avatar>
+              <div class="avatar-mask">
+                <el-icon><Camera /></el-icon>
+                <span>{{ avatarUploading ? '上传中…' : '更换头像' }}</span>
+              </div>
+            </div>
+          </el-tooltip>
+          <!-- 真正的文件选择器，藏起来由头像代点 -->
+          <input
+            ref="avatarInputRef"
+            class="avatar-file-input"
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            @change="handleAvatarChange"
+          />
         </div>
 
         <div class="info-section">
-          <h2 class="username">{{ userInfo.username }}</h2>
+          <!-- 用户名：点击文本直接改，回车或「保存」落库 -->
+          <div v-if="editingField === 'username'" class="edit-block">
+            <el-input
+              ref="usernameInputRef"
+              v-model="usernameDraft"
+              size="large"
+              maxlength="50"
+              show-word-limit
+              placeholder="用户名"
+              @keyup.enter="saveUsername"
+              @keyup.esc="cancelEdit"
+            />
+            <div class="edit-block-actions">
+              <el-button size="small" text @click="cancelEdit">取消</el-button>
+              <el-button
+                size="small"
+                type="primary"
+                :loading="savingField === 'username'"
+                @click="saveUsername"
+              >
+                保存
+              </el-button>
+            </div>
+          </div>
+          <el-tooltip v-else content="点击编辑用户名" placement="top" :show-after="200">
+            <h2
+              class="username editable-text"
+              tabindex="0"
+              @click="startEdit('username')"
+              @keyup.enter="startEdit('username')"
+            >
+              {{ userInfo.username }}
+            </h2>
+          </el-tooltip>
+
           <div class="user-meta">
             <span class="user-id">ID: {{ userInfo.id }}</span>
             <span v-if="userInfo.created_at" class="join-date">
               注册于 {{ formatDate(userInfo.created_at) }}
             </span>
           </div>
-          <p v-if="userInfo.bio" class="bio">{{ userInfo.bio }}</p>
-          <p v-else class="bio-empty">这个人很懒，什么都没写</p>
+
+          <!-- 个性签名：同用户名，点文本即改 -->
+          <div v-if="editingField === 'bio'" class="edit-block">
+            <el-input
+              v-model="bioDraft"
+              type="textarea"
+              :rows="3"
+              maxlength="500"
+              show-word-limit
+              placeholder="介绍一下自己吧"
+              @keyup.esc="cancelEdit"
+            />
+            <div class="edit-block-actions">
+              <el-button size="small" text @click="cancelEdit">取消</el-button>
+              <el-button
+                size="small"
+                type="primary"
+                :loading="savingField === 'bio'"
+                @click="saveBio"
+              >
+                保存
+              </el-button>
+            </div>
+          </div>
+          <el-tooltip v-else content="点击编辑个性签名" placement="top" :show-after="200">
+            <div
+              class="bio-line editable-text"
+              tabindex="0"
+              @click="startEdit('bio')"
+              @keyup.enter="startEdit('bio')"
+            >
+              <p v-if="userInfo.bio" class="bio">{{ userInfo.bio }}</p>
+              <p v-else class="bio-empty">这个人很懒，什么都没写</p>
+            </div>
+          </el-tooltip>
         </div>
       </div>
     </el-card>
-
-    <!-- 编辑资料对话框 -->
-    <el-dialog v-model="editDialogVisible" title="编辑资料" width="500px">
-      <el-form :model="editForm" label-width="80px">
-        <el-form-item label="用户名">
-          <el-input v-model="editForm.username" maxlength="50" show-word-limit />
-        </el-form-item>
-        <el-form-item label="头像URL">
-          <el-input v-model="editForm.avatar_url" placeholder="https://example.com/avatar.jpg" />
-          <div class="form-hint">支持外链图片，建议尺寸 200x200</div>
-        </el-form-item>
-        <el-form-item label="个人签名">
-          <el-input
-            v-model="editForm.bio"
-            type="textarea"
-            :rows="4"
-            maxlength="500"
-            show-word-limit
-            placeholder="介绍一下自己吧"
-          />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="editDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleUpdateInfo" :loading="updating">保存</el-button>
-      </template>
-    </el-dialog>
 
     <el-card class="stats-card">
       <template #header>
@@ -153,7 +216,7 @@
               placeholder="修改你的评论"
             />
             <div class="edit-actions">
-              <el-button size="small" @click="cancelEdit">取消</el-button>
+              <el-button size="small" @click="cancelEditComment">取消</el-button>
               <el-button
                 size="small"
                 type="primary"
@@ -182,7 +245,7 @@
 
             <div class="comment-foot">
               <span class="comment-time">{{ formatTime(item.created_at) }}</span>
-              <el-button text type="primary" size="small" @click="startEdit(item)">编辑</el-button>
+              <el-button text type="primary" size="small" @click="startEditComment(item)">编辑</el-button>
               <el-button text type="danger" size="small" @click="handleDeleteComment(item)">
                 删除
               </el-button>
@@ -205,8 +268,9 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { getUserInfo, updateUserInfo, getUserStats, getUserComments } from '@/api/profile'
+import { ref, computed, nextTick, onMounted } from 'vue'
+import { Camera } from '@element-plus/icons-vue'
+import { getUserInfo, updateUserInfo, uploadAvatar, getUserStats, getUserComments } from '@/api/profile'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiComments } from '@/api/comments'
 import { apiRatings } from '@/api/ratings'
@@ -224,13 +288,17 @@ const userInfo = ref({
   created_at: ''
 })
 
-const editDialogVisible = ref(false)
-const updating = ref(false)
-const editForm = ref({
-  username: '',
-  avatar_url: '',
-  bio: ''
-})
+// 「点击即改」的两个字段：同一时刻只开一个编辑区
+// username → 用户名输入框；bio → 签名文本域；null → 全部是只读文本
+const editingField  = ref(null)
+const savingField   = ref('')
+const usernameDraft = ref('')
+const bioDraft      = ref('')
+const usernameInputRef = ref(null)
+
+// 头像上传
+const avatarInputRef  = ref(null)
+const avatarUploading = ref(false)
 
 const loading = ref(true)
 const stats = ref({
@@ -258,13 +326,117 @@ const draft = ref('')
 const draftRating = ref(0)
 const saving = ref(false)
 
-function startEdit(item) {
+// ---------- 用户资料：点击文本直接编辑 ----------
+
+function startEdit(field) {
+  if (savingField.value) return
+  editingField.value = field
+  if (field === 'username') {
+    usernameDraft.value = userInfo.value.username || ''
+    nextTick(() => usernameInputRef.value?.focus())
+  } else {
+    bioDraft.value = userInfo.value.bio || ''
+  }
+}
+
+function cancelEdit() {
+  editingField.value = null
+  usernameDraft.value = ''
+  bioDraft.value = ''
+}
+
+async function saveUsername() {
+  const username = usernameDraft.value.trim()
+  if (!username) {
+    ElMessage.warning('用户名不能为空')
+    return
+  }
+  // 没改动就别白跑一次请求（后端也会因为重名把自己判成冲突）
+  if (username === userInfo.value.username) {
+    cancelEdit()
+    return
+  }
+
+  savingField.value = 'username'
+  try {
+    const updated = await updateUserInfo({ username })
+    userInfo.value = updated
+    auth.updateUser({ username: updated.username })  // header 里的显示名跟着变
+    ElMessage.success('用户名已更新')
+    cancelEdit()
+  } catch {
+    // 错误提示由 axios 拦截器统一弹出（重名、超长都在这里返回 400）
+  } finally {
+    savingField.value = ''
+  }
+}
+
+async function saveBio() {
+  const bio = bioDraft.value
+  if (bio === (userInfo.value.bio || '')) {
+    cancelEdit()
+    return
+  }
+
+  savingField.value = 'bio'
+  try {
+    const updated = await updateUserInfo({ bio })
+    userInfo.value = updated
+    ElMessage.success('个性签名已更新')
+    cancelEdit()
+  } catch {
+    // 同上
+  } finally {
+    savingField.value = ''
+  }
+}
+
+// ---------- 头像：点头像选文件并上传 ----------
+
+function openAvatarPicker() {
+  if (avatarUploading.value) return
+  avatarInputRef.value?.click()
+}
+
+async function handleAvatarChange(event) {
+  const input = event.target
+  const file = input.files && input.files[0]
+  // 先清空 value，否则连着选同一个文件不会再触发 change
+  input.value = ''
+  if (!file) return
+
+  // 前端先挡一道，省一次白跑的请求；后端同样会校验扩展名、文件头与大小
+  if (!file.type.startsWith('image/')) {
+    ElMessage.warning('请选择图片文件')
+    return
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    ElMessage.warning('图片不能超过 2MB')
+    return
+  }
+
+  avatarUploading.value = true
+  try {
+    const updated = await uploadAvatar(file)
+    userInfo.value = updated
+    auth.updateUser({ avatar_url: updated.avatar_url })
+    ElMessage.success('头像已更新')
+  } catch {
+    // 错误提示由 axios 拦截器统一弹出
+  } finally {
+    avatarUploading.value = false
+  }
+}
+
+// ---------- 观影统计 / 评论 ----------
+
+function startEditComment(item) {
   editingId.value = item.comment_id
   draft.value = item.content
   draftRating.value = item.user_rating ?? 0
 }
 
-function cancelEdit() {
+function cancelEditComment() {
   editingId.value = null
   draft.value = ''
   draftRating.value = 0
@@ -297,33 +469,8 @@ function formatDate(isoString) {
 async function loadUserInfo() {
   try {
     userInfo.value = await getUserInfo()
-    // 初始化编辑表单
-    editForm.value = {
-      username: userInfo.value.username,
-      avatar_url: userInfo.value.avatar_url || '',
-      bio: userInfo.value.bio || ''
-    }
   } catch {
     // 错误提示由 axios 拦截器统一弹出
-  }
-}
-
-async function handleUpdateInfo() {
-  try {
-    updating.value = true
-    const updated = await updateUserInfo(editForm.value)
-    userInfo.value = updated
-    editDialogVisible.value = false
-    ElMessage.success('资料更新成功')
-
-    // 更新全局 auth store 中的用户名
-    if (auth.user) {
-      auth.user.username = updated.username
-    }
-  } catch {
-    // 错误提示由 axios 拦截器统一弹出
-  } finally {
-    updating.value = false
   }
 }
 
@@ -364,7 +511,7 @@ async function saveEdit(item) {
 
   // 什么都没改：只收起编辑区，不去白刷一次 edited_at
   if (!ratingChanged && !contentChanged) {
-    cancelEdit()
+    cancelEditComment()
     return
   }
 
@@ -375,7 +522,7 @@ async function saveEdit(item) {
     ElMessage.success(
       ratingChanged && contentChanged ? '评分与评论已更新' : ratingChanged ? '评分已更新' : '评论已更新'
     )
-    cancelEdit()
+    cancelEditComment()
     // 评论时间与观影统计都会变，一起刷新
     await Promise.all([loadComments(), loadStats()])
   } catch {} finally {
@@ -437,6 +584,40 @@ onMounted(async () => {
   gap: 12px;
 }
 
+/* 头像本身就是「更换头像」的按钮：悬停盖一层遮罩提示可点 */
+.avatar-clickable {
+  position: relative;
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.avatar-mask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 12px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.avatar-clickable:hover .avatar-mask { opacity: 1; }
+
+/* 上传中常显遮罩，顺带挡住重复点击 */
+.avatar-clickable.is-uploading { cursor: default; }
+.avatar-clickable.is-uploading .avatar-mask { opacity: 1; }
+
+/* 文件选择器由头像代点，本体不出现 */
+.avatar-file-input { display: none; }
+
 .user-avatar {
   border: 3px solid var(--app-border-light);
 }
@@ -445,10 +626,6 @@ onMounted(async () => {
   font-size: 36px;
   font-weight: bold;
   color: #409eff;
-}
-
-.edit-btn {
-  width: 100%;
 }
 
 .info-section {
@@ -462,6 +639,21 @@ onMounted(async () => {
   margin: 0;
   font-size: 24px;
   color: var(--app-text);
+}
+
+/* 可点击编辑的文本：悬停时描一圈浅色边框，提示「这里能改」 */
+.editable-text {
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 0.2s, background-color 0.2s, box-shadow 0.2s;
+}
+
+.editable-text:hover,
+.editable-text:focus-visible {
+  color: #409eff;
+  background: var(--app-fill);
+  box-shadow: 0 0 0 4px var(--app-fill);
+  outline: none;
 }
 
 .user-meta {
@@ -489,10 +681,17 @@ onMounted(async () => {
   font-style: italic;
 }
 
-.form-hint {
-  font-size: 12px;
-  color: var(--app-text-muted);
-  margin-top: 4px;
+/* 编辑态：输入框在上，取消/保存在右下 */
+.edit-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.edit-block-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .stats-card {

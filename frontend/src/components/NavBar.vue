@@ -37,10 +37,6 @@
                   <el-icon><User /></el-icon>
                   个人主页
                 </el-dropdown-item>
-                <el-dropdown-item command="settings">
-                  <el-icon><Setting /></el-icon>
-                  设置
-                </el-dropdown-item>
                 <el-dropdown-item command="logout" divided>
                   <el-icon><SwitchButton /></el-icon>
                   退出登录
@@ -63,7 +59,7 @@ import { ref, watch, computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowDown, User, Setting, SwitchButton } from '@element-plus/icons-vue'
+import { ArrowDown, User, SwitchButton } from '@element-plus/icons-vue'
 import ThemeSwitch from '@/components/ThemeSwitch.vue'
 
 const auth   = useAuthStore()
@@ -85,9 +81,6 @@ function handleCommand(command) {
   switch (command) {
     case 'profile':
       router.push('/profile')
-      break
-    case 'settings':
-      ElMessage.info('设置功能开发中')
       break
     case 'logout':
       handleLogout()
