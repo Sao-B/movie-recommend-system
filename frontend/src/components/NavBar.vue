@@ -1,6 +1,6 @@
 <template>
   <el-header class="navbar">
-    <div class="navbar-inner">
+    <div class="navbar-inner" :class="{ 'is-admin': isAdminRoute }">
       <router-link to="/" class="brand">🎬 电影推荐系统</router-link>
       <div class="nav-right">
         <router-link to="/" class="nav-link">电影库</router-link>
@@ -11,6 +11,7 @@
           管理后台
         </router-link>
         <template v-if="auth.isLoggedIn">
+          <ThemeSwitch />
           <el-dropdown
             @command="handleCommand"
             trigger="hover"
@@ -58,14 +59,18 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowDown, User, Setting, SwitchButton } from '@element-plus/icons-vue'
+import ThemeSwitch from '@/components/ThemeSwitch.vue'
 
 const auth   = useAuthStore()
 const router = useRouter()
+const route  = useRoute()
+// 管理后台是全宽双栏布局，header 内容不再收进 1200px 容器，避免与侧栏错位
+const isAdminRoute = computed(() => route.path.startsWith('/admin'))
 const dropdownVisible = ref(false)
 const rotateDirection = ref('clockwise') // 'clockwise' 或 'counterclockwise'
 
@@ -99,8 +104,8 @@ function handleLogout() {
 
 <style scoped>
 .navbar {
-  background: #fff;
-  border-bottom: 1px solid #e4e7ed;
+  background: var(--app-bg-surface);
+  border-bottom: 1px solid var(--app-border);
   position: sticky;
   top: 0;
   z-index: 100;
@@ -116,6 +121,11 @@ function handleLogout() {
   justify-content: space-between;
   padding: 0 20px;
 }
+
+/* 后台双栏全宽，header 内容与侧栏左对齐 */
+.navbar-inner.is-admin {
+  max-width: none;
+}
 .brand {
   font-size: 18px;
   font-weight: 700;
@@ -128,7 +138,7 @@ function handleLogout() {
   gap: 16px;
 }
 .nav-link {
-  color: #333;
+  color: var(--app-text);
   text-decoration: none;
   font-size: 14px;
 }
@@ -141,7 +151,7 @@ function handleLogout() {
 
 .username-dropdown {
   font-size: 14px;
-  color: #333;
+  color: var(--app-text);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -152,7 +162,7 @@ function handleLogout() {
 }
 
 .username-dropdown:hover {
-  background-color: #f5f7fa;
+  background-color: var(--app-fill);
   color: #409eff;
 }
 

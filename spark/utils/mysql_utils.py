@@ -5,7 +5,7 @@ def read_df_from_mysql(spark, query_or_table, jdbc_url, user, password):
     参数
     ----
     spark           : SparkSession
-    query_or_table  : str — 表名（如 'ratings'）或子查询
+    query_or_table  : str — 表名（如 'user_ratings'）或子查询
                       传入子查询时格式须为 '(SELECT ...) AS t'
     jdbc_url        : str — JDBC 连接串（含数据库名）
     user            : str
@@ -103,6 +103,30 @@ def activate_model_version(mysql_cfg, version):
             )
             if cursor.rowcount != 1:
                 raise RuntimeError(f"model version is not building: {version}")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def cleanup_stale_model_data(mysql_cfg, keep_version, tables=("recommendations", "model_item_factors")):
+    """Delete recommendations / item-factor rows that belong to other model versions.
+
+    每次训练都是 append 写入， activate 新版本后，旧版本（含历史失败残留的
+    retired 版本）数据不再被任何代码读取，留着只会让表无限膨胀。
+    表名是本模块内的固定常量，不存在注入风险。
+    """
+    connection = _connect(mysql_cfg)
+    try:
+        with connection.cursor() as cursor:
+            for table in tables:
+                cursor.execute(
+                    f"DELETE FROM {table} WHERE model_version <> %s",
+                    (keep_version,),
+                )
+                print(f"Cleaned {cursor.rowcount:,} stale rows from {table}")
         connection.commit()
     except Exception:
         connection.rollback()

@@ -16,10 +16,12 @@ CREATE TABLE IF NOT EXISTS movie_comments (
   PRIMARY KEY (id),
   INDEX idx_movie_created (movie_id, created_at DESC) COMMENT '按电影查询评论，按时间倒序',
   INDEX idx_user (user_id) COMMENT '按用户查询评论',
+  -- 用户删除时级联删除其评论（FK 子句后不能写 COMMENT，否则 MySQL 8.0 报 1064）
   CONSTRAINT fk_comments_user FOREIGN KEY (user_id) REFERENCES users(id)
-    ON DELETE CASCADE COMMENT '用户删除时级联删除其评论',
+    ON DELETE CASCADE,
+  -- 电影删除时级联删除其评论
   CONSTRAINT fk_comments_movie FOREIGN KEY (movie_id) REFERENCES movies(movie_id)
-    ON DELETE CASCADE COMMENT '电影删除时级联删除其评论'
+    ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='电影评论表';
 
 -- 验证

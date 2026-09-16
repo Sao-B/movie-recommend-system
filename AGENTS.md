@@ -4,11 +4,16 @@
 
 本项目以 MovieLens-32M 为数据源，构建一套完整的电影推荐系统，涵盖从数据存储、离线训练到前端展示的全链路。
 
+推荐分两条链路：
+
+- **离线**：HDFS 上的 MovieLens 评分 + MySQL `user_ratings` 合并后训练 ALS，产出电影隐因子与系统用户批量推荐；
+- **在线**：用户提交评分后固定已训练的电影因子，只用带非负约束的最小二乘求解当前用户向量，立即返回 Top-N（不启动 Spark）。
+
 **核心技术栈：**
-- 存储层：Hadoop HDFS（伪分布式单机）
+- 存储层：Hadoop HDFS（本机多虚拟机模拟的小集群，hadoop102/103/104）
 - 计算层：PySpark + MLlib ALS 协同过滤
-- 数据库：MySQL（存储电影元数据、用户评分、推荐结果）
-- 后端：Flask RESTful API（Python）
+- 数据库：MySQL 8.0（电影元数据、用户评分、评论、模型与推荐结果）
+- 后端：Flask RESTful API（Python 3.12，JWT 鉴权）
 - 前端：Vue 3 SPA + Element Plus
 
 ---
@@ -17,44 +22,60 @@
 
 ```
 Project/
-├── AGENTS.md              # 本文件
+├── AGENTS.md              # 本文件：Agent 入口说明
+├── CLAUDE.md              # 仅指向 AGENTS.md 的兼容入口
 ├── README.md              # 项目说明与快速启动
-├── .gitignore
-├── config.yaml            # 全局配置（DB、HDFS、Spark 参数）
+├── docs/
+│   └── implementation-guide.md   # 按源码核对的实现指南
+├── config.example.yaml    # 配置模板（不含真实凭据）
+├── config.yaml            # 本地真实配置，不入 git，禁止读取
+├── config_loader.py       # 统一读取 config.yaml 的工具
+├── start.bat              # Windows 开发启动入口
 │
 ├── data/
 │   ├── raw/               # MovieLens-32M 原始 CSV（不入 git）
 │   └── processed/         # 预处理后的数据（不入 git）
 │
-├── hadoop/                # Hadoop 伪分布式配置文件
+├── hadoop/                # Hadoop 集群配置文件
 │   ├── core-site.xml
 │   ├── hdfs-site.xml
 │   ├── mapred-site.xml
 │   └── yarn-site.xml
 │
 ├── spark/                 # PySpark 离线训练作业
-│   ├── preprocess.py      # 数据清洗，写回 HDFS
-│   ├── train_als.py       # ALS 训练 + RMSE 评估 + 写入 MySQL
+│   ├── preprocess.py      # 清洗 movies.csv 并写入 MySQL movies
+│   ├── train_als.py       # ALS 训练 + RMSE 评估 + 写因子/推荐 + 发布模型
+│   ├── requirements.txt
 │   └── utils/
-│       ├── spark_session.py
-│       └── mysql_utils.py
+│       ├── spark_session.py       # SparkSession 与 JDBC 连接串
+│       ├── mysql_utils.py         # JDBC 读写 + 模型版本生命周期 SQL
+│       ├── training_contract.py   # 训练输入取数契约（只读 user_ratings）
+│       └── user_id_namespace.py   # 用户 ID 命名空间校验（取负方案）
 │
 ├── sql/
-│   └── schema.sql         # 完整建表 DDL
+│   ├── schema.sql         # 全新数据库完整建表 DDL（9 张表）
+│   └── migrations/        # 已有数据库的增量迁移
 │
 ├── backend/               # Flask API
 │   ├── app.py             # 入口
-│   ├── config.py
+│   ├── config.py          # 从根目录 config.yaml 加载配置
 │   ├── requirements.txt
 │   └── app/
-│       ├── __init__.py
+│       ├── __init__.py    # create_app：注册蓝图与推荐服务单例
 │       ├── models.py      # SQLAlchemy ORM
 │       ├── db.py
+│       ├── rating_stats.py                # 评分档位规则（纯函数，离线脚本复用）
+│       ├── recommendation_core.py         # 在线求解与排序（纯函数）
+│       ├── recommendation_service.py      # 在线推荐服务（含因子缓存与降级）
+│       ├── recommendation_repository.py   # 仓储层（SQLAlchemy 查询）
 │       └── routes/
-│           ├── auth.py           # 登录/注册
-│           ├── movies.py         # 电影浏览
+│           ├── auth.py            # 登录/注册
+│           ├── movies.py          # 电影浏览、筛选、类型、详情
+│           ├── ratings.py         # 评分提交与历史（写 user_ratings）
 │           ├── recommendations.py # 推荐列表
-│           └── ratings.py        # 评分提交
+│           ├── comments.py        # 电影评论
+│           ├── profile.py         # 个人主页（资料/统计/评分/评论）
+│           └── admin.py           # 管理后台（用户/电影/评分/模型）
 │
 ├── frontend/              # Vue 3 SPA
 │   ├── package.json
@@ -64,22 +85,36 @@ Project/
 │       ├── main.js
 │       ├── App.vue
 │       ├── router/index.js
-│       ├── stores/        # Pinia stores
-│       ├── api/           # Axios 封装
-│       ├── views/         # 页面组件
-│       └── components/    # 通用组件
+│       ├── layouts/AdminLayout.vue
+│       ├── stores/        # Pinia stores（auth 登录态、theme 主题三档）
+│       ├── api/           # 按域拆分的 Axios 封装（client.js 未使用）
+│       ├── views/         # HomeView / MovieDetailView / ProfileView / LoginView / RegisterView / RecommendationsView
+│       │   └── admin/     # AdminDashboard / AdminUsers / AdminMovies / AdminRatings / AdminModels
+│       └── components/    # MovieCard / NavBar / CommentSection / CommentItem
 │
-└── scripts/               # 一键启动脚本
-    ├── init_hdfs.sh       # 创建 HDFS 目录并上传数据
-    ├── run_training.sh    # 提交 Spark 训练作业
-    └── start_dev.sh       # 同时启动 Flask + Vue 开发服务器
+├── tests/                 # Python 单元与契约测试（140 个用例）
+│
+├── scripts/
+│   ├── init_hdfs.sh       # 创建 HDFS 目录并上传数据
+│   ├── run_training.sh    # 提交 Spark 训练作业
+│   ├── start_backend.py   # 可复用的 Flask 启动入口
+│   └── start_dev.sh       # 联合启动（自动探测 backend/venv，兼容 bin/ 与 Scripts/）
+│
+├── check_db.py            # 各表行数与活跃模型检查
+├── import_movie_stats.py  # 从 MovieLens 统计 CSV 回填 avg_rating / rating_count
+├── sync_movie_stats.py    # 经 SSH 从虚拟机同步评分统计
+├── fetch_posters.py       # 按 TMDB API 回填海报与简介等富化列
+└── arch_diagram.html      # 系统架构图（生成物，不在上下文里注入）
 ```
+
+> 2026-09-16 结构清理：`api/client.js` 已并入 `api/index.js`（全站单一 axios 实例，错误 toast 统一在拦截器弹）；`stores/user.js`、`views/MoviesView.vue`、`GET /api/profile/ratings` 死接口已删除。
 
 ---
 
 ## 关键配置
 
-所有连接参数统一在 `config.yaml` 中管理，代码通过它读取，**不硬编码**。
+所有连接参数统一在 `config.yaml` 中管理，代码与脚本通过根目录 `config_loader.py` 读取，**不硬编码**。
+模板见 `config.example.yaml`；`config.yaml` 含真实凭据，不入 git，也不注入 AI 上下文。
 
 | 参数 | 默认值 |
 |------|--------|
@@ -87,21 +122,36 @@ Project/
 | HDFS 数据目录 | `/movielens/` |
 | MySQL Host | `localhost:3306` |
 | MySQL DB | `movie_recommend` |
-| Flask Port | `5000` |
+| Flask Port | `8000`（本机 5000/5001 被系统策略禁止绑定）|
 | Vue Dev Port | `5173`（Vite 默认）|
 
 ---
 
 ## 数据库表结构
 
+共 9 张表（完整 DDL 见 `sql/schema.sql`，增量迁移见 `sql/migrations/`）：
+
 ```
-users           — 系统用户（id, username, password_hash）
-movies          — 电影元数据（movie_id, title, genres, year）
-ratings         — 用户评分（user_id, movie_id, rating, timestamp）
-recommendations — ALS 输出的推荐列表（user_id, movie_id, predicted_rating, rank）
+users             — 系统用户（id, username, password_hash, avatar_url, bio, created_at, role）
+movies            — 电影元数据（movie_id, title, genres, year + 评分统计与 TMDB 富化列）
+user_ratings      — 系统用户评分（user_id, movie_id, rating, rated_at）← 评分的唯一事实来源
+movie_rating_stats— MovieLens 评分五档分布（movie_id, rating_count, rating_sum, cnt_1..cnt_5）
+movie_comments    — 电影评论（user_id, movie_id, content, created_at, updated_at, edited_at）
+model_versions    — ALS 模型版本（version, rank, reg_param, status, generated_at, activated_at）
+model_item_factors— 电影隐因子（model_version, movie_id, factors, generated_at）
+recommendations   — 离线批量推荐（model_version, user_id, movie_id, predicted_rating, rank）
+ratings           — 遗留评分表，只读保留，任何代码都不应读写
 ```
 
-> ratings 表既存 MovieLens 原始评分（离线训练用），也存用户在前端提交的实时评分。
+> `movie_rating_stats` 是**离线聚合的派生表**，由 `scripts/build_ml_rating_stats.py`
+> 聚合 `data/raw/ratings.csv` 写入，不随 ALS 训练变化；详情页「评分统计」把它与
+> `user_ratings` 合并后展示，页面上不区分来源。重载 `movies` 后需重跑该脚本。
+
+> 2026-09-14 起评分表统一到 `user_ratings`：应用写入、Spark 训练、在线推荐都只读写这一张表。
+> `ratings` 仅作历史数据保留（`migrations/005` 已把数据合并过去），由 `tests/test_rating_table_contract.py`
+> 与 `tests/test_training_contract.py` 两端契约锁定，不要再把应用评分写进 `ratings`。
+>
+> MovieLens 原始评分不存在 MySQL 里，它在 HDFS 的 `ratings.csv`，训练时读取并将 `userId` 取负。
 
 ---
 
@@ -112,9 +162,12 @@ recommendations — ALS 输出的推荐列表（user_id, movie_id, predicted_rat
 | rank | 50 | 隐因子维度 |
 | maxIter | 10 | 迭代次数 |
 | regParam | 0.1 | 正则化系数 |
+| nonnegative | true | 非负约束（在线求解也沿用） |
 | coldStartStrategy | drop | 冷启动处理 |
-| 训练/测试分割 | 8:2 | |
-| 评估指标 | RMSE | 目标 < 0.85 |
+| 训练/测试分割 | 8:2 | 只对 MovieLens 评分划分；系统用户评分全部进训练集 |
+| 评估指标 | RMSE | 只用 MovieLens 测试集计算，目标 < 0.85 |
+
+模型版本状态流转 `building → active → retired`：因子与批量推荐写完后才发布为 `active`，训练失败只把 `building` 版本标为 `retired`，不会动旧的 active 模型。
 
 ---
 
@@ -139,14 +192,27 @@ start-dfs.sh && start-yarn.sh
 # 上传数据到 HDFS
 bash scripts/init_hdfs.sh
 
-# 运行 Spark 训练
+# 运行 Spark 训练（内部调用 spark-submit spark/train_als.py）
 bash scripts/run_training.sh
 
-# 启动 Flask（backend/）
-python app.py
+# 新库建表 / 已有库增量迁移
+mysql -u root -p < sql/schema.sql
+mysql -u root -p movie_recommend < sql/migrations/005_merge_ratings_into_user_ratings.sql
 
-# 启动 Vue（frontend/）
-npm run dev
+# 查看各表行数与当前 active 模型
+python check_db.py
+
+# 启动 Web 应用（Windows，推荐；会优先使用 backend/venv）
+start.bat
+
+# 或分别启动
+python scripts/start_backend.py
+npm run dev --prefix frontend
+
+# 测试与静态检查（需使用已装 numpy 的解释器，例如 backend/venv）
+backend/venv/Scripts/python.exe -m unittest discover -s tests -v
+python -m compileall -q backend spark scripts
+npm run build --prefix frontend
 ```
 
 ---
@@ -154,9 +220,11 @@ npm run dev
 ## 注意事项
 
 - `data/raw/` 和 `data/processed/` 已加入 `.gitignore`，MovieLens-32M 原始文件不提交到 git。
-- Spark 作业通过 JDBC 将推荐结果批量写入 MySQL，Flask 只做读操作（推荐列表不实时计算）。
-- 前端评分提交后写入 `ratings` 表，下次离线训练时纳入数据集。
-- 伪分布式 Hadoop 需要本机配置 SSH 免密登录（`ssh-keygen` + `authorized_keys`）。
+- Spark 作业通过 JDBC 把电影因子与批量推荐写入 MySQL；Flask 主路径是在线实时求解，因子缺失或用户无评分时才降级读 `recommendations`。
+- 前端评分写入 `user_ratings`：下一个推荐请求即触发该用户的在线计算；只有重新训练后，新评分才会进入全局模型并影响其他用户。
+- 集群需要本机配置 SSH 免密登录（`ssh-keygen` + `authorized_keys`）。
+- 不要把 `spark/preprocess.py` 当作可重复的刷新流程：它的 JDBC `overwrite` 会先清空 `movies`，既会撞上 `movie_comments` 的外键，也会抹掉评分统计与 TMDB 富化列（详见 README 第 7.3 节）。
+- `config.yaml` 按忽略清单不读取；需要了解配置项时看 `config.example.yaml`。
 
 ---
 
@@ -168,9 +236,7 @@ npm run dev
 
 | 路径 / 模式 | 原因 |
 |------|------|
-| `poster_fetch_full.log` | 抓取日志，**5.8 MB**，最容易一次性吃满上下文 |
-| `poster_fetch.log` | 同上，123 KB |
-| `poster_fetch_progress.txt` | 进度快照，非源码 |
+| `*.log`、`logs/` | 运行日志，可能很大；抓取日志已改写到系统临时目录 |
 | `arch_diagram.html` / `thesis_draft.txt` | 生成物与论文草稿，与业务代码无关 |
 | `.claude/settings.local.json`、`.claude/plans/` | 本机权限配置与会话草稿 |
 | `.agents/`、`.claude/skills/` | 技能框架文件，非业务代码 |

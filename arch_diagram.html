@@ -227,6 +227,8 @@
   .l-flask .api-item      { background: #2a1a1a; border: 1px solid #4a2828; color: #fca5a5; }
   .l-flask .method.get    { background: #166534; color: #86efac; }
   .l-flask .method.post   { background: #1e3a5f; color: #7dd3fc; }
+  .l-flask .method.put    { background: #4c1d95; color: #ddd6fe; }
+  .l-flask .method.del    { background: #7f1d1d; color: #fecaca; }
 
   .l-vue     { background: #141f1a; border: 1px solid #2a4a38; }
   .l-vue .layer-badge     { background: #14532d; color: #6ee7b7; }
@@ -374,20 +376,25 @@
       <span class="layer-tech">PySpark 3.5 · spark/train_als.py</span>
     </div>
     <div class="pipeline">
-      <div class="pipe-step">① 数据清洗<br><small style="color:#94a3b8">类型转换 · 去无效值</small></div>
+      <div class="pipe-step">① 读取 HDFS<br><small style="color:#94a3b8">userId 取负隔离</small></div>
       <div class="pipe-arrow">→</div>
-      <div class="pipe-step">② 8:2 分割<br><small style="color:#94a3b8">train / test</small></div>
+      <div class="pipe-step">② 合并评分<br><small style="color:#94a3b8">union user_ratings</small></div>
       <div class="pipe-arrow">→</div>
-      <div class="pipe-step">③ ALS.fit()<br><small style="color:#94a3b8">矩阵分解迭代</small></div>
+      <div class="pipe-step">③ 8:2 分割<br><small style="color:#94a3b8">仅 MovieLens</small></div>
       <div class="pipe-arrow">→</div>
-      <div class="pipe-step">④ RMSE 评估<br><small style="color:#94a3b8">test set</small></div>
+      <div class="pipe-step">④ ALS.fit()<br><small style="color:#94a3b8">nonnegative</small></div>
       <div class="pipe-arrow">→</div>
-      <div class="pipe-step">⑤ JDBC 写入<br><small style="color:#94a3b8">→ MySQL</small></div>
+      <div class="pipe-step">⑤ RMSE 评估<br><small style="color:#94a3b8">MovieLens test</small></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step">⑥ JDBC 写入<br><small style="color:#94a3b8">因子 + 推荐</small></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step">⑦ 发布模型<br><small style="color:#94a3b8">building → active</small></div>
     </div>
     <div class="params">
       <div class="param"><span class="param-label">rank</span>50</div>
       <div class="param"><span class="param-label">maxIter</span>10</div>
       <div class="param"><span class="param-label">regParam</span>0.1</div>
+      <div class="param"><span class="param-label">nonnegative</span>true</div>
       <div class="param"><span class="param-label">coldStart</span>drop</div>
       <div class="param"><span class="param-label">topN</span>20</div>
     </div>
@@ -398,18 +405,22 @@
       </div>
       <div class="result-item">
         <div class="result-value">4,018,960</div>
-        <div class="result-label">推荐条数写入 MySQL</div>
+        <div class="result-label">推荐条数（当前库）</div>
       </div>
       <div class="result-item">
-        <div class="result-value">200,961</div>
-        <div class="result-label">覆盖用户数</div>
+        <div class="result-value">200,948</div>
+        <div class="result-label">覆盖用户数 = 4,018,960 ÷ 20</div>
       </div>
+    </div>
+    <div class="table-desc" style="margin-top:10px;">
+      注：上表 recommendations 是在 <code>filter_recommendations_to_system_users</code> 加入之前的旧脚本写入的，
+      用户 ID 为 MovieLens 正 ID 且与系统用户 1~6 重叠，需清表重训；详见 README 第 12 节。
     </div>
   </div>
 
   <div class="connector">
     <div class="connector-arrow">↓</div>
-    <div class="connector-label">Spark JDBC · 批量写入 recommendations 表</div>
+    <div class="connector-label">Spark JDBC · 写入 model_item_factors + recommendations</div>
   </div>
 
   <!-- ④ MySQL -->
@@ -422,19 +433,39 @@
     <div class="tables">
       <div class="table-card">
         <div class="table-name">users</div>
-        <div class="table-desc">系统注册用户<br>id · username<br>password_hash（bcrypt）</div>
+        <div class="table-desc">系统注册用户<br>id · username · role<br>password_hash（Werkzeug）</div>
       </div>
       <div class="table-card">
         <div class="table-name">movies</div>
-        <div class="table-desc">电影元数据<br>movie_id · title<br>genres · year</div>
+        <div class="table-desc">电影元数据<br>movie_id · title · genres · year<br>+ 评分统计 · TMDB 富化列</div>
       </div>
       <div class="table-card">
-        <div class="table-name">ratings</div>
-        <div class="table-desc">双用途评分表<br>MovieLens 原始 + 实时<br>UNIQUE(user_id, movie_id)</div>
+        <div class="table-name">user_ratings</div>
+        <div class="table-desc">系统用户评分<br><b>唯一事实来源</b><br>UNIQUE(user_id, movie_id)</div>
+      </div>
+      <div class="table-card">
+        <div class="table-name">movie_rating_stats</div>
+        <div class="table-desc">MovieLens 五档分布<br>cnt_1..cnt_5 · rating_sum<br>离线聚合的派生表</div>
+      </div>
+      <div class="table-card">
+        <div class="table-name">model_versions</div>
+        <div class="table-desc">ALS 模型版本<br>rank · reg_param<br>building/active/retired</div>
+      </div>
+      <div class="table-card">
+        <div class="table-name">model_item_factors</div>
+        <div class="table-desc">电影隐因子（JSON 向量）<br>在线求解用户向量用</div>
       </div>
       <div class="table-card">
         <div class="table-name">recommendations</div>
-        <div class="table-desc">ALS 离线输出<br>predicted_rating<br>rank（1 = 最高）</div>
+        <div class="table-desc">ALS 离线批量推荐<br>predicted_rating<br>rank（1 = 最高）</div>
+      </div>
+      <div class="table-card">
+        <div class="table-name">movie_comments</div>
+        <div class="table-desc">电影评论<br>user_id · movie_id<br>content · edited_at</div>
+      </div>
+      <div class="table-card" style="opacity:0.6; border-style:dashed;">
+        <div class="table-name" style="color:#64748b;">ratings</div>
+        <div class="table-desc">遗留评分表（只读）<br>数据已并入 user_ratings<br>任何代码都不再读写</div>
       </div>
     </div>
   </div>
@@ -449,23 +480,31 @@
     <div class="layer-header">
       <span class="layer-badge">服务层</span>
       <span class="layer-title">Flask 3 REST API</span>
-      <span class="layer-tech">Python 3.12 · JWT · Blueprint · Port 5000</span>
+      <span class="layer-tech">Python 3.12 · JWT · Blueprint · Port 8000</span>
     </div>
     <div class="api-list">
       <div class="api-item"><span class="method post">POST</span>/api/auth/login</div>
       <div class="api-item"><span class="method post">POST</span>/api/auth/register</div>
       <div class="api-item"><span class="method get">GET</span>/api/movies/</div>
       <div class="api-item"><span class="method get">GET</span>/api/movies/&lt;id&gt;</div>
+      <div class="api-item"><span class="method get">GET</span>/api/movies/&lt;id&gt;/rating-stats</div>
       <div class="api-item"><span class="method get">GET</span>/api/movies/genres</div>
-      <div class="api-item"><span class="method post">POST</span>/api/ratings/</div>
-      <div class="api-item"><span class="method get">GET</span>/api/ratings/me</div>
+      <div class="api-item"><span class="method post">POST</span>/api/ratings/ <span style="opacity:.7">(0.5 ~ 5.0)</span></div>
+      <div class="api-item"><span class="method del">DEL</span>/api/ratings/&lt;movie_id&gt;</div>
       <div class="api-item"><span class="method get">GET</span>/api/recommendations/</div>
+      <div class="api-item"><span class="method get">GET</span>/api/movies/&lt;id&gt;/comments</div>
+      <div class="api-item"><span class="method post">POST</span>/api/movies/&lt;id&gt;/comments <span style="opacity:.7">(需已有评分)</span></div>
+      <div class="api-item"><span class="method put">PUT</span>/api/comments/&lt;id&gt; <span style="opacity:.7">(编辑)</span></div>
+      <div class="api-item"><span class="method del">DEL</span>/api/comments/&lt;id&gt; <span style="opacity:.7">(?with_rating=1 连评分)</span></div>
+      <div class="api-item"><span class="method del">DEL</span>/api/ratings/&lt;movie_id&gt; <span style="opacity:.7">(保留影评)</span></div>
+      <div class="api-item"><span class="method get">GET</span>/api/profile/info · stats · ratings</div>
+      <div class="api-item"><span class="method get">GET</span>/api/admin/users · movies · models</div>
     </div>
   </div>
 
   <div class="connector">
     <div class="connector-arrow">↓</div>
-    <div class="connector-label">Axios · Vite Proxy /api → :5000 · JWT Bearer Token</div>
+    <div class="connector-label">Axios · Vite Proxy /api → :8000 · JWT Bearer Token</div>
   </div>
 
   <!-- ⑥ Vue -->
@@ -479,27 +518,32 @@
       <div class="view-card">
         <div class="view-icon">🏠</div>
         <div class="view-name">首页</div>
-        <div class="view-tech">推荐 + 热门</div>
-      </div>
-      <div class="view-card">
-        <div class="view-icon">🎬</div>
-        <div class="view-name">电影浏览</div>
-        <div class="view-tech">分页 + 筛选</div>
+        <div class="view-tech">热门排序 + 筛选分页</div>
       </div>
       <div class="view-card">
         <div class="view-icon">🎞️</div>
         <div class="view-name">电影详情</div>
-        <div class="view-tech">评分提交</div>
+        <div class="view-tech">评分 + 评论</div>
       </div>
       <div class="view-card">
         <div class="view-icon">⭐</div>
         <div class="view-name">个性化推荐</div>
-        <div class="view-tech">Top-20 列表</div>
+        <div class="view-tech">Top-20（需登录）</div>
       </div>
       <div class="view-card">
         <div class="view-icon">👤</div>
+        <div class="view-name">个人主页</div>
+        <div class="view-tech">资料 / 统计 / 评分</div>
+      </div>
+      <div class="view-card">
+        <div class="view-icon">🔑</div>
         <div class="view-name">登录 / 注册</div>
         <div class="view-tech">JWT 鉴权</div>
+      </div>
+      <div class="view-card">
+        <div class="view-icon">🛠️</div>
+        <div class="view-name">管理后台</div>
+        <div class="view-tech">用户 / 电影 / 评分 / 模型</div>
       </div>
     </div>
   </div>

@@ -1,4 +1,5 @@
 <template>
+  <!-- 前后台共用同一根 NavBar，保证 header 风格完全一致 -->
   <NavBar />
   <router-view />
 </template>
@@ -9,5 +10,5 @@ import NavBar from '@/components/NavBar.vue'
 
 <style>
 * { box-sizing: border-box; }
-body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f7fa; }
+body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--app-bg-page); }
 </style>

@@ -7,7 +7,7 @@
 
 随着互联网的快速发展，在线视频平台中可供选择的电影内容呈爆炸式增长，用户面临日益严峻的信息过载问题。个性化推荐系统作为缓解信息过载的核心技术手段，已成为各大平台提升用户体验和内容分发效率的关键基础设施。本文以 MovieLens-32M 数据集（包含 3,200 万条用户评分、200,961 名用户、87,585 部电影）为数据源，设计并实现了一套基于 Hadoop 生态的端到端个性化电影推荐系统。
 
-系统采用四层架构：存储层基于 Hadoop HDFS 伪分布式集群，实现大规模评分数据的持久化与高吞吐量读取；计算层基于 PySpark MLlib 实现交替最小二乘（ALS）协同过滤算法进行离线批量训练，在测试集上获得均方根误差 RMSE = 0.8072（目标阈值 < 0.85）；服务层基于 Flask RESTful API 读取 MySQL 中的预计算推荐结果，并通过在服务端保存电影隐因子、执行非负最小二乘（NNLS）求解的方式，在不重新训练模型的前提下为有新评分的用户即时更新推荐；前端基于 Vue 3 单页面应用实现用户注册/登录、电影浏览、在线评分与个性化推荐展示。
+系统采用四层架构：存储层基于 Hadoop HDFS 伪分布式集群，实现大规模评分数据的持久化与高吞吐量读取；计算层基于 PySpark MLlib 实现交替最小二乘（ALS）协同过滤算法进行离线批量训练，在测试集上获得均方根误差 RMSE = 0.8074（目标阈值 < 0.85）；服务层基于 Flask RESTful API 读取 MySQL 中的预计算推荐结果，并通过在服务端保存电影隐因子、执行非负最小二乘（NNLS）求解的方式，在不重新训练模型的前提下为有新评分的用户即时更新推荐；前端基于 Vue 3 单页面应用实现用户注册/登录、电影浏览、在线评分与个性化推荐展示。
 
 在工程设计层面，系统实现了用户 ID 命名空间隔离机制以防止 MovieLens 用户 ID 与系统用户 ID 冲突；采用 building→active→retired 状态机管理模型版本的原子发布，保证服务连续性；设计了离线批量推荐与在线即时推荐相结合的混合架构，兼顾训练吞吐量与推荐实时性；基于 JWT 令牌实现了无状态身份鉴权。实验结果表明，系统整体架构合理，推荐精度满足预设指标，具备较好的工程可行性与横向扩展能力。
 
@@ -18,7 +18,7 @@ Abstract
 
 With the rapid development of the Internet, the volume of movies available on online video platforms has grown explosively, leaving users increasingly overwhelmed by information overload. Personalized recommendation systems, as a core technical means to mitigate this challenge, have become key infrastructure for improving user experience and content distribution efficiency on major platforms. This paper designs and implements an end-to-end personalized movie recommendation system based on the Hadoop ecosystem, using the MovieLens-32M dataset (containing 32 million ratings, 200,961 users, and 87,585 movies) as the data source.
 
-The system adopts a four-layer architecture. The storage layer is based on a Hadoop HDFS pseudo-distributed cluster to support persistent storage and high-throughput reading of large-scale rating data. The computing layer implements the Alternating Least Squares (ALS) collaborative filtering algorithm via PySpark MLlib for offline batch training, achieving a root mean square error (RMSE) of 0.8072 on the test set (target threshold: < 0.85). The service layer is based on a Flask RESTful API that reads pre-computed recommendation results from MySQL and supports real-time user vector updates through Non-Negative Least Squares (NNLS) solving with fixed item factors, eliminating the need to retrain the model after new ratings are submitted. The frontend is a Vue 3 single-page application providing user registration/login, movie browsing, rating submission, and personalized recommendation display.
+The system adopts a four-layer architecture. The storage layer is based on a Hadoop HDFS pseudo-distributed cluster to support persistent storage and high-throughput reading of large-scale rating data. The computing layer implements the Alternating Least Squares (ALS) collaborative filtering algorithm via PySpark MLlib for offline batch training, achieving a root mean square error (RMSE) of 0.8074 on the test set (target threshold: < 0.85). The service layer is based on a Flask RESTful API that reads pre-computed recommendation results from MySQL and supports real-time user vector updates through Non-Negative Least Squares (NNLS) solving with fixed item factors, eliminating the need to retrain the model after new ratings are submitted. The frontend is a Vue 3 single-page application providing user registration/login, movie browsing, rating submission, and personalized recommendation display.
 
 In terms of engineering design, the system implements a user ID namespace isolation mechanism to prevent collisions between MovieLens user IDs and system user IDs; adopts a building→active→retired state machine to manage atomic model version publication and ensure service continuity; and designs a hybrid recommendation architecture combining offline batch recommendations with online real-time recommendations to balance training throughput and recommendation responsiveness. A stateless JWT token-based authentication mechanism is also implemented. Experimental results demonstrate that the system architecture is sound, recommendation accuracy meets the preset target, and the system exhibits good engineering feasibility and horizontal scalability.
 
@@ -175,11 +175,11 @@ ratings.csv 中的评分值本身已符合 0.5~5.0 范围约束，不需要额�
 
 3.3.1  训练集与测试集划分
 
-为保证每次运行结果可复现，划分时固定随机种子 seed=42，将 MovieLens 评分按 8:2 比例随机划分为训练集（约 2,560 万条）和测试集（约 640 万条）。需要特别说明的是，RMSE 评估仅在 MovieLens 测试集上进行，不包含系统用户评分；系统用户评分全量并入训练集，以确保 ALS 能学习到真实用户的偏好。
+为保证每次运行结果可复现且划分过程与分区数、运行次数无关，本文不使用随机切分，而是对每条评分计算确定性哈希桶：以 md5(userId:movieId) 的前 8 位十六进制对 10,000 取模，得到 [0, 10000) 内的桶号，桶号小于 8,000（对应 train_ratio = 0.8）的评分划入训练集，其余划入测试集。由于哈希以 userId 为输入之一，同一用户的评分会被稳定地拆分到训练集与测试集两侧，每个用户在两边都有评分，符合显式反馈协同过滤中"评估已知用户未观测评分"的标准评估协议。划分后训练集约 2,560 万条、测试集约 640 万条。需要特别说明的是，RMSE 评估仅在 MovieLens 测试集上进行，不包含系统用户评分；系统用户评分全量并入训练集，以确保 ALS 能学习到真实用户的偏好。
 
 3.3.2  MovieLens 评分数据
 
-MovieLens 原始评分在进入 Spark ALS 之前，须将 userId 字段加上偏移量 ml_user_offset（默认值 10,000,000），以与系统用户 ID 区分（详见第3.4节）。偏移后的评分与系统用户评分通过 unionByName 合并为统一训练集，字段格式均为 (userId: Int, movieId: Int, rating: Float)。
+MovieLens 原始评分在进入 Spark ALS 之前，须将 userId 字段取负（userId_mapped = -ml_user_id），以与系统用户 ID 区分（详见第3.4节）。取负后的评分与系统用户评分通过 unionByName 合并为统一训练集，字段格式均为 (userId: Int, movieId: Int, rating: Float)。
 
 3.3.3  系统用户评分数据
 
@@ -195,17 +195,17 @@ MovieLens 原始评分在进入 Spark ALS 之前，须将 userId 字段加上偏
 
 MovieLens-32M 中的用户 ID 为整数，最大值为 200,961。系统注册用户的 ID 由 MySQL AUTO_INCREMENT 生成，从 1 开始递增。在现有用户规模下，两套 ID 的取值范围存在重叠。若不加区分地将两类评分混合后输入 ALS，模型将误认为 MovieLens 用户 ID = 5 与系统用户 ID = 5 是同一用户，从而混淆两类用户的偏好向量，导致系统用户推荐错误。
 
-3.4.2  用户 ID 偏移机制
+3.4.2  用户 ID 取负隔离机制
 
-为消除上述冲突，本文设计了 ID 偏移机制：在将 MovieLens 评分写入 Spark 训练集之前，对所有 MovieLens 用户 ID 加上常量偏移 ml_user_offset = 10,000,000：
+为消除上述冲突，本文设计了 ID 取负隔离机制：在将 MovieLens 评分写入 Spark 训练集之前，对所有 MovieLens 用户 ID 取负：
 
-    userId_mapped = ml_user_id + ml_user_offset
+    userId_mapped = -ml_user_id
 
-偏移后的 MovieLens 用户 ID 范围为 [10,000,001, 10,200,961]，与系统用户 ID（当前最大值远小于 10,000,000）不存在交集。训练完成后，ALS 输出的推荐结果按系统用户 ID 过滤（left semi join），仅保留 users 表中存在的用户对应的推荐，不保存 MovieLens 虚拟用户的推荐记录。
+取负后的 MovieLens 用户 ID 范围为 [-200,961, -1]，而系统用户 ID 恒为正整数（从 1 开始自增），两套 ID 在数轴上天然不重叠。相比"加常量偏移"的方案，取负方案无需维护偏移量参数，也无需校验"系统用户 ID 是否越过偏移阈值"——无论系统用户增长到多大规模，两类 ID 都不可能冲突，隔离性由数域本身保证而非由参数阈值保证。训练完成后，ALS 输出的推荐结果按系统用户 ID 过滤（left semi join），仅保留 users 表中存在的用户对应的推荐，不保存 MovieLens 虚拟用户的推荐记录。
 
-3.4.3  用户 ID 冲突校验
+3.4.3  用户 ID 命名空间校验
 
-为防止系统用户数量增长超过安全阈值导致 ID 重叠，训练作业在启动时执行命名空间校验：读取 users 表的最大 ID 值 max_system_user_id，验证 max_system_user_id < ml_user_offset，若校验失败则立即中止训练并抛出异常，避免训练出含 ID 混淆的错误模型。此校验同时验证 ml_user_offset + max_ml_user_id 不超过 Java Int 最大值（2,147,483,647），防止 Spark 整数溢出。
+尽管取负方案在数域上保证了隔离，训练作业仍在启动时执行命名空间校验（user_id_namespace.py）：读取 users 表的最大 ID 值 max_system_user_id，校验其为非负整数（系统用户 ID 必须为正），并输出两套 ID 的实际取值区间（系统用户 [1, max_system_user_id]，MovieLens 用户 [-max_ml_user_id, -1]）供日志审计。若 users 表中出现非法的负数 ID，校验立即失败并中止训练，避免在数据被污染的情况下训练出 ID 混淆的模型。
 
 
 第4章  基于 ALS 的电影推荐模型设计
@@ -376,7 +376,7 @@ Flask 服务在每次推荐请求时查询 status = 'active' 的版本，只有�
 
     实验编号  rank  regParam  maxIter  测试集 RMSE  测试集 MAE
     Exp-1     10    0.10      10       【待填】     【待填】
-    Exp-2     50    0.10      10       0.8072       【待填】
+    Exp-2     50    0.10      10       0.8074       【待填】
     Exp-3     100   0.10      10       【待填】     【待填】
     Exp-4     50    0.05      10       【待填】     【待填】
     Exp-5     50    0.15      10       【待填】     【待填】
@@ -401,7 +401,7 @@ Flask 服务在每次推荐请求时查询 status = 'active' 的版本，只有�
 
 5.3.1  ALS 参数实验
 
-【待补充：填入参数对比实验的 RMSE/MAE 结果，分析 rank、regParam 对精度的影响趋势，并说明最优参数选择依据。参考结论：实验表明，rank=50、regParam=0.1、maxIter=10 在测试集上取得最优 RMSE = 0.8072，满足目标阈值 < 0.85 的要求。】
+【待补充：填入参数对比实验的 RMSE/MAE 结果，分析 rank、regParam 对精度的影响趋势，并说明最优参数选择依据。参考结论：实验表明，rank=50、regParam=0.1、maxIter=10 在测试集上取得最优 RMSE = 0.8074，满足目标阈值 < 0.85 的要求。】
 
 5.3.2  不同模型的推荐效果
 
@@ -433,7 +433,7 @@ Flask 服务在每次推荐请求时查询 status = 'active' 的版本，只有�
 
 5.5.1  模型有效性
 
-实验结果表明，在 MovieLens-32M 数据集上，本文所采用的 ALS 协同过滤模型（rank=50，regParam=0.1，maxIter=10）达到了 RMSE = 0.8072，优于预设目标阈值 0.85。这一结果与 ALS 在 MovieLens 系列数据集上的文献报道基本吻合，证明了算法配置的合理性。
+实验结果表明，在 MovieLens-32M 数据集上，本文所采用的 ALS 协同过滤模型（rank=50，regParam=0.1，maxIter=10）达到了 RMSE = 0.8074，优于预设目标阈值 0.85。这一结果与 ALS 在 MovieLens 系列数据集上的文献报道基本吻合，证明了算法配置的合理性。
 
 5.5.2  在线更新的作用
 
@@ -522,11 +522,11 @@ ALS 模型在 PySpark MLlib 中以如下方式构建并训练：
     rmse = RegressionEvaluator(metricName="rmse",
                labelCol="rating", predictionCol="prediction").evaluate(predictions)
 
-实际训练结果：RMSE = 0.8072，满足目标阈值 < 0.85。
+实际训练结果：RMSE = 0.8074，满足目标阈值 < 0.85。训练数据共 32,000,204 条评分（训练集 25,599,242 条、测试集 6,400,962 条），模型版本 als-20260915T052511Z-5aa79520cc8a 成功发布为 active，电影隐因子共 80,194 部影片入库。
 
 6.2.4  批量推荐生成
 
-调用 model.recommendForAllUsers(top_n=20) 为所有用户生成 Top-20 推荐后，通过 posexplode 展开并按 registered_users 过滤，只保留系统注册用户的推荐记录，最终以 append 模式写入 recommendations 表，本次训练共写入 4,018,960 条推荐记录。
+调用 model.recommendForAllUsers(top_n=20) 为所有用户生成 Top-20 推荐后，通过 posexplode 展开并按 registered_users 过滤，只保留系统注册用户的推荐记录，predicted_rating 截断回 [0.5, 5.0] 后，最终以 append 模式写入 recommendations 表。本次训练写入推荐记录 0 条：当前系统尚无注册用户产生评分，left semi join 过滤后无符合条件的用户，属预期行为；同时发布成功后自动清理了 model_item_factors 表中 160,424 条历史版本残留因子（含旧脚本产出的脏数据），全库当前仅保留 active 版本的干净因子。
 
 6.3  在线推荐模块
 
@@ -534,9 +534,11 @@ ALS 模型在 PySpark MLlib 中以如下方式构建并训练：
 
 评分提交接口（POST /api/ratings/）接收 JSON 请求体 {"movie_id": int, "rating": float}，执行以下步骤：
 （1）验证 JWT 令牌，获取当前用户 ID；
-（2）校验 rating 值合法性（0.5 ≤ rating ≤ 5.0）及 movie_id 存在性；
-（3）若 user_ratings 表中已存在相同 (user_id, movie_id) 记录，则更新评分与时间戳（upsert 语义）；否则新建记录；
+（2）校验 rating 取值合法性——只接受 [0.5, 5.0] 且须为 0.5 的整数倍，0 与其它越界值一律返回 400；随后校验 movie_id 的存在性；
+（3）按 upsert 语义处理：若 user_ratings 表中已存在相同 (user_id, movie_id) 记录，则更新评分与时间戳；否则新建记录；
 （4）提交事务，返回 200（更新）或 201（新建）。
+
+评分一旦写入便只能修改或删除，不存在"用 0 分表达撤销"的路径：接口拒收 0，评分控件的取值也被限定在 0.5 ~ 5.0。删除评分统一走 DELETE /api/ratings/<movie_id>，入口有两处——个人中心的"我的评分"列表，以及详情页影评卡片上「删除」确认框里的"保留影评"（详情页不再为评分单独提供删除入口，撤销评分与影评的处理合并在同一个确认框里，见 6.5.5 节）。该接口按硬删除处理，user_ratings 中对应那一行被移除，而不是写入一条 0 分记录。选择"保留影评"时删评分不会删除该用户的影评，但会使其影评退化为"仅自己可见"；用户重新评分后，同一条影评自动恢复公开。
 
 评分提交成功后，用户的下一次推荐请求即可反映最新评分，无需任何额外操作。
 
@@ -577,7 +579,7 @@ get_for_user() 方法封装了完整的回退逻辑：
 
 6.4.1  用户与评分数据表
 
-users 表存储系统注册用户，字段包括自增主键 id、唯一用户名 username 和 bcrypt 哈希密码 password_hash。密码采用 Werkzeug 的 generate_password_hash() 函数哈希存储，验证时调用 check_password_hash()，原始密码不落库。
+users 表存储系统注册用户，字段包括自增主键 id、唯一用户名 username 和哈希密码 password_hash。密码采用 Werkzeug 的 generate_password_hash() 函数哈希存储，验证时调用 check_password_hash()，原始密码不落库。
 
 user_ratings 表为应用唯一的评分来源，通过外键 fk_user_ratings_user 约束 user_id 必须存在于 users 表，通过唯一键 uk_user_movie(user_id, movie_id) 保证同一用户对同一电影只保留最新一条评分。ratings 表作为 legacy 表保留，不参与任何应用逻辑或训练流程，保留的目的仅为避免历史数据迁移引入风险。
 
@@ -593,11 +595,15 @@ model_versions 表记录每次训练的版本号、rank、reg_param、状态（b
 
 model_item_factors 表以 (model_version, movie_id) 为复合主键，factors 字段存储 JSON 数组格式的 50 维隐向量。Flask 服务加载时将 JSON 字符串解析为 numpy 数组，并校验维度（必须为 1-D 且长度等于模型 rank）和有限性（不含 NaN/Inf），确保后续矩阵运算的数值稳定性。
 
+6.4.5  MovieLens 评分分布表
+
+movie_rating_stats 表存储 MovieLens 全量评分的五档分布，是电影详情页「评分统计」的数据来源之一。movies 表只保留 avg_rating 与 rating_count 两个标量，无法支撑五档柱状图的渲染，因此以 movie_id 为主键单独建表，记录 cnt_1 至 cnt_5 五个档位的计数，以及 0.5 粒度的精确评分总和 rating_sum（avg_rating 只有两位小数，做加权平均精度不足）。该表由 scripts/build_ml_rating_stats.py 对 3200 万条原始评分一次性聚合生成（约 84,432 行），不随 ALS 训练变化；档位划分复用 backend/rating_stats.py 的 rating_to_star_bucket()，与本站用户评分保持同一口径（4.5 分归入 5 星档）。查询时该表与 user_ratings 合并后返回——平均分按评分条数加权、五档分布逐档相加，接口与页面均不区分评分来源。
+
 6.5  API 服务模块
 
 6.5.1  认证模块
 
-认证蓝图（/api/auth）提供注册（POST /register）和登录（POST /login）两个接口。登录成功后返回 Flask-JWT-Extended 生成的 JWT 令牌，有效期为 7 天。前端将令牌存储在 Pinia 的 auth store 中，Axios 请求拦截器自动在每个需要鉴权的请求头中注入 Authorization: Bearer {token}。
+认证蓝图（/api/auth）提供注册（POST /register）和登录（POST /login）两个接口。登录成功后返回 Flask-JWT-Extended 生成的 JWT 令牌。项目未显式配置 JWT_ACCESS_TOKEN_EXPIRES，实际有效期即该库的默认值 15 分钟；如需延长，应在 backend/config.py 中显式设置。前端将令牌存储在 Pinia 的 auth store 中，Axios 请求拦截器自动在每个需要鉴权的请求头中注入 Authorization: Bearer {token}。
 
 6.5.2  电影模块
 
@@ -605,21 +611,33 @@ model_item_factors 表以 (model_version, movie_id) 为复合主键，factors �
 
 6.5.3  评分模块
 
-评分蓝图（/api/ratings）的实现已在6.3.1节描述。此外，GET /me 接口返回当前用户的最近 200 条评分历史（按 rated_at 降序），供前端"我的评分"页面展示。
+评分蓝图（/api/ratings）的实现已在6.3.1节描述。此外，GET /me 接口返回当前用户的最近 200 条评分历史（按 rated_at 降序），供前端"我的评分"页面展示；DELETE /<movie_id> 删除当前用户对某部电影的评分，未评过返回 404。这是硬删除：user_ratings 中该行直接消失，不写 0 分记录、也不做软删除。系统已不提供"打 0 分撤销"的机制，0 与其它越界值一律返回 400，前端也不把评分控件做成可清零。该接口是"只删评分"的入口（影评留在原地、退为仅自己可见）；详情页不再为评分单独设删除入口，撤销评分与"删影评"合并在影评卡片上的同一个确认框里，两个出口分别调用 DELETE /api/ratings/<movie_id> 与 DELETE /api/comments/<id>?with_rating=1，见6.5.5节。
 
 6.5.4  推荐模块
 
 推荐蓝图（/api/recommendations）仅包含单个接口 GET /，需携带有效 JWT 令牌。接口从 Flask 应用扩展 app.extensions["recommendation_service"] 获取推荐服务单例（在 create_app() 时初始化，避免多请求重复构建因子缓存），调用 service.get_for_user(user_id) 获取推荐列表后返回 JSON 响应。
 
+6.5.5  评论模块
+
+评论蓝图同时挂在 /api/movies/<id>/comments 与 /api/comments/<id> 两条路径上，提供发表（POST）、列表（GET）、编辑（PUT）和删除（DELETE）四类操作，正文一律必填。列表接口使用 jwt_required(optional=True)，游客也能读取影评，不会返回 401；携带令牌时额外返回当前用户自己的那条影评（my_comment），供详情页在原评论输入框的位置置顶展示。同一用户对同一电影只保留一条影评，重复发表即更新正文，不追加新行；编辑（PUT）与再次发表都会写入 edited_at，前端据此在影评卡片底部显示"上次修改于 …"（与"发布于 …"（created_at）并排显示在同一处，卡片右上角不再重复显示时间），而未被编辑过的影评该字段为 NULL，因此不显示这一行。判断"是否编辑过"不能用 updated_at——该列在插入时即被写成发表时间。
+
+评分与影评在交互上被设计为"必须同时存在、缺一不可"：详情页只提供"已打分且正文非空"才可点击的提交按钮，缺一即禁用并提示还差哪一半（"还差一个评分…"/"还差一句影评…"）。服务端在 create_comment 中加了一道同源校验——作者此刻对这部电影没有有效评分时，发表影评直接返回 400（"请先给这部电影评分，评分和影评需要一起发表"），因此即便绕过前端、或使用旧版客户端，也无法留下一条没有评分的影评。接口校验顺序为：正文非空（400）→ 电影存在（404）→ 作者持有评分（400）。前端提交时也固定为"先 POST /api/ratings/、再 POST /api/movies/<id>/comments"，顺序不可颠倒。
+
+发表成功后表单收起：原输入框的位置被用户自己的影评顶上去（即置顶展示的那张卡片），并且不再提供"修改"按钮——该表单只会在尚未发表时出现。此后改正文与改评分都收进这张卡片的"编辑"态：点"编辑"后，编辑区里用户名旁的星星才变为可点，改动先落在草稿上，点"保存"才按"先评分、再影评"的顺序落库并刷新列表与统计——展示态下星星对所有人只读，不做即时修改；只改评分不改正文时不写 edited_at，什么都没改就点"保存"只会收起编辑区。同一时刻全页只允许一条影评处于编辑态（时间线评论不可与置顶评论同时修改），谁先点"编辑"谁进入，其余卡片的操作全部冻结——"编辑"与"删除"两个按钮一起禁用、整张卡片压暗，"删除"的处理函数入口处还有一道 editLocked 判断兜底，因此有编辑进行中的另一条评论的任何行为都不会被触发；置顶展示块与时间线之间渲染一条分割线。影评卡片上的时间只在底部显示一处："发布于 …"恒为发表时间 created_at，"上次修改于 …"仅在正文真被改过（edited_at 非空）时出现，卡片右上角不再单列时间。
+
+影评的可见性不作为独立字段存储，而是由"作者此刻是否持有该电影的有效评分"推导。作者在个人中心删除了该电影评分、或在影评卡片的确认框里选择了"保留影评"之后，其影评对外隐藏、仅作者本人可见；恢复评分（0.5 星及以上）后，同一条影评自动重新公开。由于发表侧不允许产生这种状态（没有评分就发不出影评），"仅自己可见"只会由"删除 → 保留影评"这一条路径产生。列表查询通过 LEFT JOIN user_ratings 判断作者是否有评分，并对请求者本人额外放行，即筛选条件为 or_(UserRating.id.isnot(None), MovieComment.user_id == 请求者 ID)。该设计使删除评分无需改动影评表，也不会出现"评分与可见状态两份数据互相不一致"的问题。
+
+删除只有一个入口：详情页影评卡片上的「删除」（置顶那条与时间线里自己那条是同一个组件，行为完全一致），且确认框会问"这条影评草稿要保留吗"，两个出口分别落在两个接口上。选择"保留影评"时调用 DELETE /api/ratings/<movie_id>，只删评分这一行，影评留在原地但退成"仅自己可见"，界面提示"评分已删除，这条影评现在仅你自己可见"；选择"不保留"时调用 DELETE /api/comments/<id>?with_rating=1，后端在同一事务里把 movie_comments 与 user_ratings 两行一并删除，避免出现"影评没了、评分还留着"的半截状态，置顶那块随即变回评论输入框。作者本来就没有评分时（上一次选过"保留"），则没有评分可删，只有"确定要删除这条影评吗？"这一句简单问法，对应 DELETE /api/comments/<id> 不带参数的形式。确认框使用了区分取消与关闭的选项，因此点右上角 X 或按 Esc 与"不保留"是两种不同结果：前者什么都不删。权限与存在性判断（403=他人、404=不存在）都在删除任何一行之前完成，校验不通过时一行都不会被删掉。
+
 6.6  前端展示模块
 
 6.6.1  应用架构
 
-前端采用 Vue 3 + Vite + Element Plus 技术栈，以单页面应用（SPA）形式组织，通过 Vue Router 实现客户端路由，使用 Pinia 管理全局状态（主要为 JWT 令牌和用户信息），以 Axios 封装的 API 模块与后端通信。Vite 开发服务器配置了 /api 路径的反向代理，将开发时的跨域请求转发到 Flask（localhost:5000），无需额外配置 CORS 处理。
+前端采用 Vue 3 + Vite + Element Plus 技术栈，以单页面应用（SPA）形式组织，通过 Vue Router 实现客户端路由，使用 Pinia 管理全局状态（主要为 JWT 令牌和用户信息），以 Axios 封装的 API 模块与后端通信。Vite 开发服务器配置了 /api 路径的反向代理，将开发时的跨域请求转发到 Flask（localhost:8000），无需额外配置 CORS 处理。
 
 6.6.2  核心页面
 
-系统包含五个主要页面：登录页（LoginView）实现用户身份验证，注册页（RegisterView）实现新用户创建，电影列表页（HomeView）支持按类型/关键词/年份筛选与分页浏览，电影详情页（MovieDetailView）展示电影信息并提供评分控件（Element Plus Rate 组件，支持半星），推荐页（RecommendationsView）展示当前用户的 Top-20 个性化推荐列表及每部电影的预测评分。
+系统包含五个主要页面：登录页（LoginView）实现用户身份验证，注册页（RegisterView）实现新用户创建，电影列表页（HomeView）支持按类型/关键词/年份筛选与分页浏览，电影详情页（MovieDetailView）展示电影信息（海报、剧情简介、导演、演员等，其中剧情简介采用 18px 字号以便阅读），并把评分与影评合成一个提交动作——用户名与评分控件（Element Plus Rate 组件，支持半星，取值 0.5 ~ 5.0）排在评论框上方，用户名紧挨在星星左侧，「发表」按钮位于评论框下方，评分与影评必须同时填写、缺一不可，缺哪一半会给出提示且按钮不可点击；评分统计区在平均分与五档分布之外，另给出评分人数（MovieLens 评分用户数与本站用户评分数的合计）。评分控件不提供"打 0 分"的清零行为（关闭了组件的 clearable 属性，连点同一颗星不会归零），星星旁也不再单独提供「删除」；发表成功后表单收起，原输入框的位置由用户自己的影评顶替（置顶展示），且不再出现「修改」按钮：此后改正文通过卡片上的「编辑」就地修改（仍走 PUT /api/comments/<id>，不会重复新增一条），改评分则直接点击卡片上那颗星星——只有作者自己那条影评的星星可点，点击后当场 POST /api/ratings/ 落库并刷新影评列表与评分统计。撤销评分与删除影评合并到影评卡片上的同一个「删除」确认框里：确认框先问"这条影评草稿要保留吗"，选"保留"则只删评分（user_ratings 中该行硬删除，影评退成"仅自己可见"），选"不保留"则由后端在同一次提交里把影评与评分两行一起删掉，置顶那块随即变回评论输入框；作者本来就没有评分时只有"确定要删除这条影评吗？"这一句简单问法。用户若变动了评分或影评却未点「发表 / 修改」便离开页面，前端弹出确认框，可选择"提交并离开"或"不提交，直接离开"，避免误以为改动已经保存。提交后按"先刷新影评列表、再重拉评分统计"的顺序收尾；本人影评条中用户名旁的星级取列表接口返回的值（改评分后由列表重新拉取带回），详情页不会把评分控件的表单值实时喂下来，从而保证界面显示与库中记录始终一致。用户的影评在原输入框的位置置顶展示（带"我的影评"标签与编辑/删除入口），同一条在下方时间线中同样出现；影评可就地编辑，编辑后底部显示"上次修改于 …"（就地编辑改动正文却未保存，也会被计入上述未提交提醒）。推荐页（RecommendationsView）展示当前用户的 Top-20 个性化推荐列表及每部电影的预测评分。
 
 6.6.3  JWT 鉴权流程
 
@@ -656,6 +674,7 @@ model_item_factors 表以 (model_version, movie_id) 为复合主键，factors �
     TC-M-05  查询单部电影详情         GET /api/movies/1                  返回 Toy Story 详情及平均评分
     TC-M-06  查询不存在的电影         GET /api/movies/9999999            HTTP 404，返回"资源不存在"
     TC-M-07  获取所有类型列表         GET /api/movies/genres             返回非空数组，含"Drama"等类型
+    TC-M-08  查询电影评分统计         GET /api/movies/318/rating-stats   返回五档distribution与加权平均average，HTTP 200；count含MovieLens与本站评分；带token时附my_rating
 
 【待补充：填写每个用例的实际测试结果（通过/失败）以及关键响应截图或日志摘录。】
 
@@ -666,17 +685,48 @@ model_item_factors 表以 (model_version, movie_id) 为复合主键，factors �
     用例编号  测试场景                 请求示例                           预期结果
     TC-R-01  合法评分（新增）         POST /api/ratings/ {movie_id:1, rating:4.5}  HTTP 201，返回评分记录
     TC-R-02  合法评分（更新）         再次 POST 同一 movie_id，rating:3.0         HTTP 200，rating 更新为3.0
-    TC-R-03  评分值越下界             rating=0.0                         HTTP 400，提示"rating 范围 0.5~5.0"
-    TC-R-04  评分值越上界             rating=5.5                         HTTP 400，提示"rating 范围 0.5~5.0"
+    TC-R-03  评分值为 0                 rating=0                            HTTP 400，提示"rating 范围 0.5 ~ 5.0"；已有评分保持不变（0 不再表示撤销）
+    TC-R-04  评分值越界                 rating=0.3、5.5 或 -1               HTTP 400，提示"rating 范围 0.5 ~ 5.0"
     TC-R-05  movie_id 不存在          movie_id=9999999                   HTTP 404，提示"电影不存在"
     TC-R-06  未携带 JWT 直接访问      无 Authorization 头                HTTP 401，鉴权失败
-    TC-R-07  查询当前用户评分历史     GET /api/ratings/me                HTTP 200，返回评分列表
+    TC-R-07  删除自己的评分           DELETE /api/ratings/1              HTTP 200，该评分记录消失；重复删除返回 404
+    TC-R-08  删除评分不连坐影评         DELETE /api/ratings/1              HTTP 200，评分行消失；该用户的影评行仍在，转为仅自己可见
+    TC-R-09  详情页撤销评分只走影评卡片的确认框  点同一颗星两次，再点影评卡片的「删除」→选「保留影评」  控件不开 clearable，连点不归零；星星旁没有独立删除入口；选「保留影评」后当场调 DELETE /api/ratings/<movie_id>，user_ratings 该行被硬删掉、不产生 0 分记录，影评保留但退成仅自己可见；点 X / Esc 则什么都不删
+    TC-R-10  详情页改评分走「编辑 + 保存」    点置顶影评的「编辑」→ 在编辑区把星从 4.0 改到 2.5 → 点「保存」      展示态的星星一律只读（本人、他人都点不动），只有进入编辑态才可改；改了星但没点「保存」不落库（接口里 user_rating 仍为旧值、edited_at 不写）；点「保存」后先 POST /api/ratings/、再在正文有改时 PUT /api/comments/<id>，随后刷新影评列表与评分统计；全页同时只许一条影评编辑（置顶与时间线同名那条互斥，另一张卡「编辑」置灰）
 
 【待补充：填写实际测试结果。】
 
-7.2.3  推荐结果查询功能
+7.2.3  影评发表、编辑与可见性
 
-表7-3  推荐接口测试用例
+表7-3  影评接口测试用例
+
+    用例编号  测试场景                     请求示例                                     预期结果
+    TC-C-01  发表影评（有正文）            POST /api/movies/318/comments {content:"好看"}  HTTP 201，返回影评记录，edited_at 为 null
+    TC-C-02  正文为空发表                 content="" 或纯空白                            HTTP 400，提示"评论内容不能为空"
+    TC-C-03  重复发表（一人一片一条）      再次 POST 同一电影、不同正文                     HTTP 200，仍只有一条影评，正文被更新且 edited_at 非空
+    TC-C-04  未携带 JWT 发表              无 Authorization 头                            HTTP 401
+    TC-C-05  游客读取影评列表             GET /api/movies/318/comments                   HTTP 200，不需要鉴权
+    TC-C-06  列表附带作者星级与可见性      同上，作者已评分                                每条含 user_rating 与 visible=true
+    TC-C-07  编辑自己的影评               PUT /api/comments/4 {content:"改过"}           HTTP 200，正文更新；edited_at 非空、created_at 保持不变
+    TC-C-08  编辑他人影评                 PUT /api/comments/4，改用另一账号的 JWT          HTTP 403，正文不变
+    TC-C-09  编辑不存在的影评             PUT /api/comments/99999999                     HTTP 404
+    TC-C-10  删除作者评分后影评隐藏        在个人中心删除该片评分后，匿名 GET 影评列表       HTTP 200，total=0，对外看不到该影评
+    TC-C-11  隐藏影评对作者本人仍可见      删除评分后，本人 GET 影评列表                     HTTP 200，my_comment 非空且 visible=false，时间线中也包含该条
+    TC-C-12  恢复评分后影评重新公开        删除评分后重新提交 rating=3.0，再匿名 GET          HTTP 200，total=1，visible=true（无需重新发表）
+    TC-C-13  本人影评既置顶也在时间线里    本人 GET 影评列表                              my_comment 与 comments 中同时包含该条，id 一致
+    TC-C-14  没有评分不能发表影评        POST /api/movies/318/comments（作者未评分）      HTTP 400，提示"请先给这部电影评分，评分和影评需要一起发表"，movie_comments 不留新行
+    TC-C-15  先评分再发表（成对发表）     先 POST /api/ratings/ {rating:4.0}，再 POST 影评  HTTP 201；评分行与影评行同时存在，列表 visible=true
+    TC-C-16  删除选「保留影评」只删评分    DELETE /api/ratings/318（作者已有评分与影评）    HTTP 200，评分行消失、影评行保留；对外 total=0，本人 my_comment.visible=false
+    TC-C-17  删除选「不保留」两行一起删    DELETE /api/comments/4?with_rating=1（作者已有评分）  HTTP 200，with_rating=true；movie_comments 与 user_ratings 两行同一次提交删掉，列表 total=0、详情页 my_rating 归 null
+    TC-C-18  不带参数只删影评              DELETE /api/comments/4（作者已有评分）          HTTP 200，with_rating=false；评分行保留（这一方向不连坐）
+    TC-C-19  草稿态删除（没有评分可删）    DELETE /api/comments/4?with_rating=1（作者已选过「保留影评」）  HTTP 200，with_rating=false，影评行消失且不报错
+    TC-C-20  删影评的权限与存在性校验      DELETE 他人影评 / 不存在的影评，带 with_rating=1  HTTP 403 / 404，且校验不通过时一行都不删（评分仍在）
+
+【待补充：填写实际测试结果。】
+
+7.2.4  推荐结果查询功能
+
+表7-4  推荐接口测试用例
 
     用例编号  测试场景                         预期结果
     TC-Rec-01  模型已 active，用户有评分       HTTP 200，返回 top_n=20 条推荐，字段含 rank/predicted_rating/movie
@@ -687,9 +737,9 @@ model_item_factors 表以 (model_version, movie_id) 为复合主键，factors �
 
 【待补充：填写实际测试结果及必要的推荐列表截图（建议附上【图7-1 推荐页面截图】）。】
 
-7.2.4  重复评分更新验证
+7.2.5  重复评分更新验证
 
-对同一用户对同一电影多次提交不同评分，验证 user_ratings 表中 (user_id, movie_id) 唯一键约束生效，数据库中只保留最后一次评分，且对应的 rated_at 时间戳更新为最新提交时间。此行为通过对 user_ratings 表执行 SELECT 查询验证，确认无重复记录。
+对同一用户对同一电影多次提交不同评分，验证 user_ratings 表中 (user_id, movie_id) 唯一键约束生效，数据库中只保留最后一次评分，且对应的 rated_at 时间戳更新为最新提交时间。此行为通过对 user_ratings 表执行 SELECT 查询验证，确认无重复记录。撤销评分则相反：后端拒收 0，撤销统一走 DELETE /api/ratings/<movie_id>（详情页影评卡片「删除 → 保留影评」确认后当场调这个接口，个人中心「我的评分」也调它）；它不是写入一条 0 分记录，而是删除该行，验证时同样以 SELECT 确认该行消失、且未被替换为 0 分记录。
 
 7.3  系统性能与可靠性验证
 
@@ -697,7 +747,7 @@ model_item_factors 表以 (model_version, movie_id) 为复合主键，factors �
 
 【待补充：使用 Postman 或 Apache Bench (ab) 对推荐接口进行压力测试，记录单用户连续请求下的响应时延分布。参考格式：
 
-表7-4  推荐接口响应时延（单用户，连续 XX 次请求）
+表7-5  推荐接口响应时延（单用户，连续 XX 次请求）
 
     路径                                  P50      P95      P99
     /api/recommendations/（无评分，批量回退）  【ms】   【ms】   【ms】
@@ -719,7 +769,7 @@ model_item_factors 表以 (model_version, movie_id) 为复合主键，factors �
 
 8.2  主要研究结论
 
-（1）在 MovieLens-32M 数据集上，采用 rank=50、regParam=0.1、maxIter=10 配置的 ALS 协同过滤模型达到了测试集 RMSE = 0.8072，低于预设目标阈值 0.85，验证了该参数配置在大规模显式评分数据上的有效性。
+（1）在 MovieLens-32M 数据集上，采用 rank=50、regParam=0.1、maxIter=10 配置的 ALS 协同过滤模型达到了测试集 RMSE = 0.8074，低于预设目标阈值 0.85，验证了该参数配置在大规模显式评分数据上的有效性。
 
 （2）基于固定电影因子的在线 NNLS 推荐机制，在不重新训练全局模型的前提下，实现了用户新增评分后推荐的即时更新，有效弥补了离线批量推荐在时效性上的不足，对于缓解新用户冷启动问题具有实际意义。
 

@@ -3,7 +3,8 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import get_jwt_identity, verify_jwt_in_request
 from sqlalchemy import func
 from ..db import db
-from ..models import User, Movie, Rating, ModelVersion, Recommendation
+from ..models import User, Movie, UserRating, ModelVersion, Recommendation, MovieComment
+from ..pagination import get_pagination
 
 admin_bp = Blueprint('admin', __name__)
 
@@ -20,6 +21,14 @@ def admin_required(fn):
     return wrapper
 
 
+def apply_sort(query, columns, default_sort, default_order):
+    """按表头点击传来的 sort/order 排序；白名单外的字段一律忽略，防止任意列注入。"""
+    sort = request.args.get("sort", default_sort)
+    order = request.args.get("order", default_order)
+    column = columns.get(sort, columns[default_sort])
+    return query.order_by(column.desc() if order == "desc" else column.asc())
+
+
 # ==================== 统计数据 API ====================
 
 @admin_bp.get("/stats")
@@ -28,20 +37,20 @@ def get_stats():
     """获取系统统计数据"""
     user_count = db.session.query(func.count(User.id)).scalar() or 0
     movie_count = db.session.query(func.count(Movie.movie_id)).scalar() or 0
-    rating_count = db.session.query(func.count(Rating.id)).scalar() or 0
+    rating_count = db.session.query(func.count(UserRating.id)).scalar() or 0
     recommendation_count = db.session.query(func.count(Recommendation.id)).scalar() or 0
 
     active_model = ModelVersion.query.filter_by(status='active').first()
 
     # 最近10条评分
     recent_ratings_query = db.session.query(
-        Rating.id,
-        Rating.rating,
+        UserRating.id,
+        UserRating.rating,
         User.username,
         Movie.title.label('movie_title')
-    ).join(User, Rating.user_id == User.id)\
-     .join(Movie, Rating.movie_id == Movie.movie_id)\
-     .order_by(Rating.rated_at.desc())\
+    ).join(User, UserRating.user_id == User.id)\
+     .join(Movie, UserRating.movie_id == Movie.movie_id)\
+     .order_by(UserRating.rated_at.desc())\
      .limit(10).all()
 
     recent_ratings = [
@@ -95,15 +104,21 @@ def get_stats():
 @admin_required
 def list_users():
     """获取用户列表（分页）"""
-    page = max(1, request.args.get("page", 1, type=int))
-    per_page = min(100, request.args.get("per_page", 20, type=int))
+    page, per_page = get_pagination()
     q = request.args.get("q", "").strip()
 
     query = User.query
     if q:
         query = query.filter(User.username.ilike(f"%{q}%"))
 
-    pagination = query.order_by(User.created_at.desc()).paginate(
+    query = apply_sort(
+        query,
+        {"id": User.id, "username": User.username, "created_at": User.created_at},
+        "created_at",
+        "desc",
+    )
+
+    pagination = query.paginate(
         page=page, per_page=per_page, error_out=False
     )
 
@@ -181,9 +196,16 @@ def delete_user(user_id):
     if user_id == current_user_id:
         return jsonify({"msg": "不能删除当前登录的管理员"}), 400
 
+    # user_ratings / movie_comments / recommendations 的外键都没有配置级联删除，
+    # 这里先手动清理关联数据，否则 MySQL 会抛外键约束错误。
+    deleted = {}
+    deleted["ratings"] = UserRating.query.filter_by(user_id=user_id).delete()
+    deleted["comments"] = MovieComment.query.filter_by(user_id=user_id).delete()
+    deleted["recommendations"] = Recommendation.query.filter_by(user_id=user_id).delete()
+
     db.session.delete(user)
     db.session.commit()
-    return jsonify({"msg": "删除成功"})
+    return jsonify({"msg": "删除成功", "deleted": deleted})
 
 
 # ==================== 电影管理 API ====================
@@ -192,15 +214,34 @@ def delete_user(user_id):
 @admin_required
 def list_movies():
     """获取电影列表（分页）"""
-    page = max(1, request.args.get("page", 1, type=int))
-    per_page = min(100, request.args.get("per_page", 20, type=int))
+    page, per_page = get_pagination()
     q = request.args.get("q", "").strip()
+    genres = request.args.get("genres", "").strip()
+    year = request.args.get("year", type=int)
 
     query = Movie.query
     if q:
         query = query.filter(Movie.title.ilike(f"%{q}%"))
+    if genres:
+        query = query.filter(Movie.genres.ilike(f"%{genres}%"))
+    if year:
+        query = query.filter(Movie.year == year)
 
-    pagination = query.order_by(Movie.movie_id).paginate(
+    query = apply_sort(
+        query,
+        {
+            "movie_id": Movie.movie_id,
+            "title": Movie.title,
+            "genres": Movie.genres,
+            "year": Movie.year,
+            "avg_rating": Movie.avg_rating,
+            "rating_count": Movie.rating_count,
+        },
+        "movie_id",
+        "asc",
+    )
+
+    pagination = query.paginate(
         page=page, per_page=per_page, error_out=False
     )
 
@@ -247,9 +288,15 @@ def delete_movie(movie_id):
     if not movie:
         return jsonify({"msg": "电影不存在"}), 404
 
+    # 同 delete_user：关联表未配置级联，先清理再删主记录。
+    deleted = {}
+    deleted["ratings"] = UserRating.query.filter_by(movie_id=movie_id).delete()
+    deleted["comments"] = MovieComment.query.filter_by(movie_id=movie_id).delete()
+    deleted["recommendations"] = Recommendation.query.filter_by(movie_id=movie_id).delete()
+
     db.session.delete(movie)
     db.session.commit()
-    return jsonify({"msg": "删除成功"})
+    return jsonify({"msg": "删除成功", "deleted": deleted})
 
 
 # ==================== 评分管理 API ====================
@@ -258,25 +305,39 @@ def delete_movie(movie_id):
 @admin_required
 def list_ratings():
     """获取评分列表（分页）"""
-    page = max(1, request.args.get("page", 1, type=int))
-    per_page = min(100, request.args.get("per_page", 20, type=int))
+    page, per_page = get_pagination()
     user_id = request.args.get("user_id", type=int)
     movie_id = request.args.get("movie_id", type=int)
 
     # 使用 join 避免 N+1 查询
     query = db.session.query(
-        Rating,
+        UserRating,
         User.username,
         Movie.title
-    ).join(User, Rating.user_id == User.id)\
-     .join(Movie, Rating.movie_id == Movie.movie_id)
+    ).join(User, UserRating.user_id == User.id)\
+     .join(Movie, UserRating.movie_id == Movie.movie_id)
 
     if user_id:
-        query = query.filter(Rating.user_id == user_id)
+        query = query.filter(UserRating.user_id == user_id)
     if movie_id:
-        query = query.filter(Rating.movie_id == movie_id)
+        query = query.filter(UserRating.movie_id == movie_id)
 
-    pagination = query.order_by(Rating.rated_at.desc()).paginate(
+    query = apply_sort(
+        query,
+        {
+            "id": UserRating.id,
+            "user_id": UserRating.user_id,
+            "movie_id": UserRating.movie_id,
+            "username": User.username,
+            "movie_title": Movie.title,
+            "rating": UserRating.rating,
+            "rated_at": UserRating.rated_at,
+        },
+        "rated_at",
+        "desc",
+    )
+
+    pagination = query.paginate(
         page=page, per_page=per_page, error_out=False
     )
 
@@ -300,7 +361,7 @@ def list_ratings():
 @admin_required
 def delete_rating(rating_id):
     """删除评分"""
-    rating = db.session.get(Rating, rating_id)
+    rating = db.session.get(UserRating, rating_id)
     if not rating:
         return jsonify({"msg": "评分不存在"}), 404
 

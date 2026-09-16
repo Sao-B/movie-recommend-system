@@ -16,8 +16,6 @@ def create_app(config_obj=None):
 
     # 加载配置
     if config_obj is None:
-        import sys, os
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
         from config import Config
         config_obj = Config
 
@@ -31,12 +29,7 @@ def create_app(config_obj=None):
     JWTManager(app)
 
     # 在线推荐服务：应用级单例，避免多线程环境下重复构建因子缓存
-    import sys
-    import os
-    backend_dir = os.path.join(os.path.dirname(__file__), "..")
-    if backend_dir not in sys.path:
-        sys.path.insert(0, backend_dir)
-    from recommendation_service import OnlineRecommendationService
+    from .recommendation_service import OnlineRecommendationService
     from .recommendation_repository import SqlAlchemyRecommendationRepository
     app.extensions["recommendation_service"] = OnlineRecommendationService(
         SqlAlchemyRecommendationRepository(),

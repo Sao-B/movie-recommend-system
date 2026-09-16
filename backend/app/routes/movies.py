@@ -1,13 +1,16 @@
 from flask import Blueprint, request, jsonify
+from flask_jwt_extended import get_jwt_identity, jwt_required
 from sqlalchemy import func
 from ..db import db
-from ..models import Movie, Rating
+from ..models import Movie, MovieRatingStats, UserRating
+from ..rating_stats import count_ratings, merge_counts, summarize_counts
 
 movies_bp = Blueprint("movies", __name__)
 
 # 常量定义
 _PAGE_SIZE = 20
-MIN_RATING_COUNT_FOR_POPULAR = 100  # 热门电影的最小评分人数阈值
+MIN_RATING_COUNT_FOR_POPULAR = 100  # 热门电影的最小评分人数阈值（入榜门票）
+M_PRIOR = 500  # 贝叶斯先验门槛：热门池评分人数的中位数（实测 524，取整）
 
 
 @movies_bp.get("/")
@@ -31,13 +34,25 @@ def list_movies():
 
     # 排序逻辑：使用 movies 表中的 MovieLens 统计数据
     if sort == "popular":
-        # 按平均评分排序（主要），评分人数为次要
-        # 过滤掉评分人数少于阈值的电影，避免小样本偏差
-        query = query.filter(Movie.rating_count >= MIN_RATING_COUNT_FOR_POPULAR)
-        query = query.order_by(
-            func.coalesce(Movie.avg_rating, 0).desc(),
-            func.coalesce(Movie.rating_count, 0).desc()
+        # 首页热门榜：IMDB 式贝叶斯加权评分，避免"小样本高分"霸榜：
+        #   WR = v/(v+m) * R + m/(v+m) * C   （R=均分, v=人数, m=先验门槛, C=全库均分）
+        # m 取热门池（rating_count>=100）评分人数的中位数 ≈ 500（实测 524），
+        # 即"典型上榜电影"的话语权恰好一半；不做海报过滤，排序完全由公式决定。
+        global_mean = (
+            db.session.query(func.avg(Movie.avg_rating))
+            .filter(Movie.avg_rating.isnot(None))
+            .scalar()
+        ) or 0.0
+        m = M_PRIOR
+        weighted = (
+            func.coalesce(Movie.rating_count, 0)
+            / (func.coalesce(Movie.rating_count, 0) + m)
+            * func.coalesce(Movie.avg_rating, 0)
+            + m / (func.coalesce(Movie.rating_count, 0) + m)
+            * global_mean
         )
+        query = query.filter(Movie.rating_count >= MIN_RATING_COUNT_FOR_POPULAR)
+        query = query.order_by(weighted.desc(), func.coalesce(Movie.rating_count, 0).desc())
     elif sort == "latest":
         query = query.order_by(func.coalesce(Movie.year, 0).desc())
     else:
@@ -65,6 +80,64 @@ def get_movie(movie_id: int):
 
     # 直接返回 Movie 模型中的 MovieLens 统计数据
     return jsonify(movie.to_dict())
+
+
+@movies_bp.get("/<int:movie_id>/rating-stats")
+@jwt_required(optional=True)
+def get_movie_rating_stats(movie_id: int):
+    """GET /api/movies/<id>/rating-stats — 该电影的评分统计（公开）
+
+    统计口径 = **MovieLens 全量评分 + 本站用户评分合并**，页面上不区分来源：
+    平均分按评分条数加权，五档分布逐档相加。
+
+    - MovieLens 侧取 ``movie_rating_stats``（``scripts/build_ml_rating_stats.py``
+      离线聚合好的五档分布与精确总和），没有该片数据时视为 0；
+    - 本站侧取 ``user_ratings``，逐条用 ``rating_to_star_bucket`` 归档，与离线
+      聚合共用同一份档位规则。
+
+    无需登录即可查看；携带有效 JWT 时额外返回当前用户对这部电影的评分
+    （``my_rating``，未评过或未登录为 ``null``），供详情页回显星级。
+
+    ``jwt_required(optional=True)`` 是关键：没有 Authorization 头也放行，
+    只有带了 token 才解析身份，不会因为游客访问而返回 401。
+    """
+    if db.session.get(Movie, movie_id) is None:
+        return jsonify({"msg": "电影不存在"}), 404
+
+    local_ratings = [
+        row[0]
+        for row in db.session.query(UserRating.rating)
+        .filter(UserRating.movie_id == movie_id)
+        .all()
+    ]
+
+    ml = db.session.get(MovieRatingStats, movie_id)
+    if ml is not None:
+        counts = merge_counts(ml.star_counts(), count_ratings(local_ratings))
+        total = (ml.rating_count or 0) + len(local_ratings)
+        rating_sum = float(ml.rating_sum or 0) + sum(local_ratings)
+    else:
+        counts = count_ratings(local_ratings)
+        total = len(local_ratings)
+        rating_sum = sum(local_ratings)
+
+    stats = summarize_counts(counts, total, rating_sum)
+
+    my_rating = None
+    identity = get_jwt_identity()
+    if identity is not None:
+        mine = UserRating.query.filter_by(
+            user_id=int(identity), movie_id=movie_id
+        ).first()
+        my_rating = mine.rating if mine else None
+
+    return jsonify({
+        "movie_id":     movie_id,
+        "count":        stats["count"],
+        "average":      stats["average"],
+        "distribution": stats["distribution"],
+        "my_rating":    my_rating,
+    })
 
 
 @movies_bp.get("/genres")

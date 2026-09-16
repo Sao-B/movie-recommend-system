@@ -93,7 +93,7 @@ const normalizedRating = computed(() => {
 .poster-container {
   width: 100%;
   height: 240px;
-  background: #f5f5f5;
+  background: var(--app-fill-light);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -123,7 +123,7 @@ const normalizedRating = computed(() => {
 
 .poster-placeholder {
   font-size: 48px;
-  color: #dcdfe6;
+  color: var(--app-text-muted);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -137,7 +137,7 @@ const normalizedRating = computed(() => {
   min-height: 0;
 }
 
-.movie-year  { font-size: 12px; color: #999; margin-bottom: 4px; flex-shrink: 0; }
+.movie-year  { font-size: 12px; color: var(--app-text-muted); margin-bottom: 4px; flex-shrink: 0; }
 .movie-title {
   font-size: 14px;
   font-weight: 500;

@@ -7,6 +7,15 @@ from typing import Iterable
 import numpy as np
 from scipy.optimize import nnls
 
+# 评分量纲（MovieLens 半星制）：在线预测分展示前统一截断到该区间
+RATING_MIN = 0.5
+RATING_MAX = 5.0
+
+
+def clamp_rating(value):
+    """Clamp a predicted score back into the observed rating scale [0.5, 5.0]."""
+    return max(RATING_MIN, min(RATING_MAX, float(value)))
+
 
 def solve_user_vector(
     item_factors: np.ndarray,

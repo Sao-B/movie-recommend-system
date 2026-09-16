@@ -36,7 +36,7 @@ vm   = vm_config()                         # 虚拟机 SSH / MySQL
 所以凭据始终留在索引里，规则从未起过作用。现已完成：
 
 1. 凭据全部迁入 `config.yaml`，4 个脚本改为经 `config_loader.py` 读取；
-2. `config.example.yaml` 补齐 `tmdb` / `vm` / `als.ml_user_offset`，与真实结构保持一致（值为占位符）；
+2. `config.example.yaml` 补齐 `tmdb` / `vm` 段，与真实结构保持一致（值为占位符）；
 3. `.gitignore` 中那几条无效规则已移除。
 
 **仍需人工完成：轮换 MySQL 密码、虚拟机 SSH 密码、TMDB API Key。**

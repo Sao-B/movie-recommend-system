@@ -25,17 +25,35 @@ def main():
 
     # ── 1. 读取 movies.csv ────────────────────────────────────────
     print(f"读取 {hdfs_cfg['movies_path']} ...")
+    # escape='"'：MovieLens 用 RFC4180 双引号转义（"" 表示字面引号）。
+    # 缺这个 option 时（默认 escape='\\'），带引号的标题会被撕裂，
+    # 甚至把标题后半截漏进 genres（历史事故：movie_id 284105）。
     movies_raw = spark.read.csv(
-        hdfs_cfg["movies_path"], header=True, inferSchema=True
+        hdfs_cfg["movies_path"], header=True, inferSchema=True, escape='"'
     )
 
     # ── 2. 解析年份，规范列名 ─────────────────────────────────────
     # 使用 Spark 原生 regexp_extract 替代 Python UDF，性能更好
+    #
+    # MovieLens 的 title 惯例把冠词倒装到末尾（"Shawshank Redemption, The (1994)"，
+    # 便于字母序排序）。这里还原为自然语序 "The Shawshank Redemption (1994)"，
+    # 与库内一次性清洗（2026-09-15，映射备份 title_fix_mapping.csv）保持一致。
+    ARTICLES = ("The|An|A|La|Le|Les|Los|Las|El|Il|L|Der|Die|Das|Det|Den|De|Dem|"
+                "Ein|Eine|Ett|O|Os|As|Un|Una|Une|En")
+    title_fixed = F.trim(
+        F.regexp_replace(
+            F.regexp_replace(
+                F.col("title"),
+                rf"^(.+), ({ARTICLES}) (\(.+\))$", "$2 $1 $3",
+            ),
+            rf"^(.+), ({ARTICLES})$", "$2 $1",
+        )
+    )
     movies = (
         movies_raw
         .select(
             F.col("movieId").cast("int").alias("movie_id"),
-            F.col("title"),
+            title_fixed.alias("title"),
             F.col("genres"),
             F.regexp_extract(F.col("title"), r'\((\d{4})\)\s*$', 1)
              .cast("int")

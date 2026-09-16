@@ -8,10 +8,7 @@ from threading import RLock
 
 import numpy as np
 
-try:
-    from recommendation_core import rank_unrated_items, solve_user_vector
-except ModuleNotFoundError:
-    from .recommendation_core import rank_unrated_items, solve_user_vector
+from .recommendation_core import clamp_rating, rank_unrated_items, solve_user_vector
 
 
 logger = logging.getLogger(__name__)
@@ -88,25 +85,43 @@ class OnlineRecommendationService:
             movie_data = movie.to_dict() if hasattr(movie, "to_dict") else movie
             result.append({
                 "rank": rank,
-                "predicted_rating": round(score, 4),
+                # 在线分数是裸点积，截断到评分量纲，避免超出 [0.5, 5.0] 穿帮
+                "predicted_rating": round(clamp_rating(score), 4),
+                "movie": movie_data,
+            })
+        return result
+
+    def _popular_recommendations(self):
+        """冷启动兜底：批量推荐为空时回退全站高分热门电影，避免新用户看到空白页。"""
+        movies = self.repository.get_popular_movies(self.top_n)
+        result = []
+        for rank, movie in enumerate(movies, start=1):
+            movie_data = movie.to_dict() if hasattr(movie, "to_dict") else movie
+            result.append({
+                "rank": rank,
+                # 借用 avg_rating 作为展示分值；无评分数据时为 None（前端已兼容）
+                "predicted_rating": movie_data.get("avg_rating"),
                 "movie": movie_data,
             })
         return result
 
     def get_for_user(self, user_id):
-        """Return online recommendations, falling back to the active batch result."""
+        """Return online recommendations, falling back to the active batch result,
+        then to globally popular movies when batch results are empty."""
         model = self.repository.get_active_model()
         if model is None:
-            return self._batch_recommendations(user_id, None)
+            recs = self._batch_recommendations(user_id, None)
+        else:
+            ratings = self.repository.get_user_ratings(user_id)
+            if not ratings:
+                recs = self._batch_recommendations(user_id, str(model.version))
+            else:
+                try:
+                    recs = self._online_recommendations(user_id, model, ratings)
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    recs = self._batch_recommendations(user_id, str(model.version))
+                except Exception:
+                    logger.exception("online recommendation failed for user_id=%s", user_id)
+                    recs = self._batch_recommendations(user_id, str(model.version))
 
-        ratings = self.repository.get_user_ratings(user_id)
-        if not ratings:
-            return self._batch_recommendations(user_id, str(model.version))
-
-        try:
-            return self._online_recommendations(user_id, model, ratings)
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-            return self._batch_recommendations(user_id, str(model.version))
-        except Exception:
-            logger.exception("online recommendation failed for user_id=%s", user_id)
-            return self._batch_recommendations(user_id, str(model.version))
+        return recs if recs else self._popular_recommendations()

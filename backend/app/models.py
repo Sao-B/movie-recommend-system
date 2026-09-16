@@ -32,7 +32,11 @@ class User(db.Model):
         self.password_hash = generate_password_hash(password)
 
     def check_password(self, password: str) -> bool:
-        return check_password_hash(self.password_hash, password)
+        try:
+            return check_password_hash(self.password_hash, password)
+        except ValueError:
+            # 哈希方法不被当前 werkzeug 支持（如历史遗留的 bcrypt），按密码错误处理而非 500
+            return False
 
     def is_admin(self) -> bool:
         """检查用户是否为管理员"""
@@ -90,8 +94,13 @@ class Movie(db.Model):
         }
 
 
-class Rating(db.Model):
-    __tablename__ = "ratings"
+class UserRating(db.Model):
+    """系统用户评分（canonical 存储，训练与在线推荐共用）。
+
+    历史遗留：应用曾写 legacy `ratings` 表，005 迁移后统一到 `user_ratings`。
+    """
+
+    __tablename__ = "user_ratings"
 
     id       = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
     user_id  = db.Column(db.Integer, db.ForeignKey("users.id"),
@@ -166,6 +175,10 @@ class MovieComment(db.Model):
     content    = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=_utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+    #: 用户手动编辑过正文的时间；**从未编辑为 NULL**（migrations/007 新增）。
+    #: 判断「是否编辑过」不能用 updated_at——那一列在插入时就会被写成发表时刻，
+    #: 用它做判据会把所有影评都显示成「已修改」。
+    edited_at  = db.Column(db.DateTime)
 
     user  = db.relationship("User", backref="comments")
     movie = db.relationship("Movie", backref="comments")
@@ -179,4 +192,41 @@ class MovieComment(db.Model):
             "content":    self.content,
             "created_at": _to_iso_utc(self.created_at),
             "updated_at": _to_iso_utc(self.updated_at),
+            "edited_at":  _to_iso_utc(self.edited_at),
+        }
+
+
+class MovieRatingStats(db.Model):
+    """MovieLens 评分五档分布（离线聚合产物）。
+
+    ``movies`` 表只有 ``avg_rating`` / ``rating_count`` 两个标量，没有分档计数，
+    而详情页「评分统计」需要 5/4/3/2/1 星各占多少。数据由
+    ``scripts/build_ml_rating_stats.py`` 聚合 ``data/raw/ratings.csv`` 一次性写入，
+    不随 ALS 训练变化。
+
+    查询侧把它与本站 ``user_ratings`` 合并后展示，页面上不区分来源。
+    """
+
+    __tablename__ = "movie_rating_stats"
+
+    movie_id     = db.Column(db.Integer, db.ForeignKey("movies.movie_id"),
+                             primary_key=True)
+    rating_count = db.Column(db.Integer, nullable=False)
+    # 0.5 粒度的精确总和，用于与本站评分一起做加权平均
+    # （movies.avg_rating 只有 2 位小数，精度不够）
+    rating_sum   = db.Column(db.Numeric(14, 1), nullable=False)
+    cnt_1        = db.Column(db.Integer, nullable=False, default=0)
+    cnt_2        = db.Column(db.Integer, nullable=False, default=0)
+    cnt_3        = db.Column(db.Integer, nullable=False, default=0)
+    cnt_4        = db.Column(db.Integer, nullable=False, default=0)
+    cnt_5        = db.Column(db.Integer, nullable=False, default=0)
+
+    def star_counts(self):
+        """返回 ``{5: n, 4: n, 3: n, 2: n, 1: n}``，供 rating_stats 合并使用。"""
+        return {
+            5: self.cnt_5 or 0,
+            4: self.cnt_4 or 0,
+            3: self.cnt_3 or 0,
+            2: self.cnt_2 or 0,
+            1: self.cnt_1 or 0,
         }

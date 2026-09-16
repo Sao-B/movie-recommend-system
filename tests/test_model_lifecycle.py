@@ -8,7 +8,11 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "spark"))
 
-from utils.mysql_utils import activate_model_version, retire_model_version  # noqa: E402
+from utils.mysql_utils import (  # noqa: E402
+    activate_model_version,
+    cleanup_stale_model_data,
+    retire_model_version,
+)
 
 
 class FakeCursor:
@@ -45,6 +49,17 @@ class FakeConnection:
         pass
 
 
+class BrokenCursor:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def execute(self, sql, params):
+        raise RuntimeError("boom")
+
+
 class ModelLifecycleTests(unittest.TestCase):
     MYSQL_CONFIG = {
         "host": "localhost",
@@ -78,6 +93,25 @@ class ModelLifecycleTests(unittest.TestCase):
         self.assertIn("status = 'building'", self.connection.statements[0][0])
         self.assertNotIn("status = 'active'", self.connection.statements[0][0])
         self.assertTrue(self.connection.committed)
+
+    def test_cleanup_deletes_stale_rows_from_both_model_tables(self):
+        cleanup_stale_model_data(self.MYSQL_CONFIG, "v-current")
+
+        self.assertEqual(len(self.connection.statements), 2)
+        tables = [sql.split("FROM ")[1].split(" ")[0] for sql, _ in self.connection.statements]
+        self.assertEqual(tables, ["recommendations", "model_item_factors"])
+        for sql, params in self.connection.statements:
+            self.assertIn("WHERE model_version <> %s", sql)
+            self.assertEqual(params, ("v-current",))
+        self.assertTrue(self.connection.committed)
+
+    def test_cleanup_failure_triggers_rollback(self):
+        self.connection.cursor = lambda: BrokenCursor()
+
+        with self.assertRaises(RuntimeError):
+            cleanup_stale_model_data(self.MYSQL_CONFIG, "v-current")
+        self.assertTrue(self.connection.rolled_back)
+        self.assertFalse(self.connection.committed)
 
 
 if __name__ == "__main__":

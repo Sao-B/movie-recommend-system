@@ -3,7 +3,8 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import func, desc
 from app.db import db
-from app.models import Rating, Movie, MovieComment, User
+from app.models import UserRating, Movie, MovieComment, User
+from app.pagination import get_pagination
 
 profile_bp = Blueprint('profile', __name__, url_prefix='/api/profile')
 
@@ -78,12 +79,12 @@ def get_user_stats():
     user_id = int(get_jwt_identity())
 
     # 基础统计
-    total_ratings = db.session.query(func.count(Rating.id)).filter(
-        Rating.user_id == user_id
+    total_ratings = db.session.query(func.count(UserRating.id)).filter(
+        UserRating.user_id == user_id
     ).scalar() or 0
 
-    avg_rating = db.session.query(func.avg(Rating.rating)).filter(
-        Rating.user_id == user_id
+    avg_rating = db.session.query(func.avg(UserRating.rating)).filter(
+        UserRating.user_id == user_id
     ).scalar()
     avg_rating = round(float(avg_rating), 2) if avg_rating else 0
 
@@ -95,21 +96,21 @@ def get_user_stats():
     rating_distribution = {}
     for i in range(11):  # 0, 0.5, 1.0, ..., 5.0
         rating_value = i * 0.5
-        count = db.session.query(func.count(Rating.id)).filter(
-            Rating.user_id == user_id,
-            Rating.rating == rating_value
+        count = db.session.query(func.count(UserRating.id)).filter(
+            UserRating.user_id == user_id,
+            UserRating.rating == rating_value
         ).scalar() or 0
         rating_distribution[str(rating_value)] = count
 
     # 最喜欢的类型 Top 3
     favorite_genres = db.session.query(
         Movie.genres,
-        func.count(Rating.id).label('count')
+        func.count(UserRating.id).label('count')
     ).join(
-        Rating, Rating.movie_id == Movie.movie_id
+        UserRating, UserRating.movie_id == Movie.movie_id
     ).filter(
-        Rating.user_id == user_id,
-        Rating.rating >= 4.0,  # 只统计高分电影
+        UserRating.user_id == user_id,
+        UserRating.rating >= 4.0,  # 只统计高分电影
         Movie.genres.isnot(None)
     ).group_by(
         Movie.genres
@@ -131,12 +132,12 @@ def get_user_stats():
     # 最喜欢的导演 Top 3
     favorite_directors = db.session.query(
         Movie.director,
-        func.count(Rating.id).label('count')
+        func.count(UserRating.id).label('count')
     ).join(
-        Rating, Rating.movie_id == Movie.movie_id
+        UserRating, UserRating.movie_id == Movie.movie_id
     ).filter(
-        Rating.user_id == user_id,
-        Rating.rating >= 4.0,
+        UserRating.user_id == user_id,
+        UserRating.rating >= 4.0,
         Movie.director.isnot(None),
         Movie.director != ''
     ).group_by(
@@ -155,62 +156,6 @@ def get_user_stats():
     })
 
 
-@profile_bp.get("/ratings")
-@jwt_required()
-def get_user_ratings():
-    """获取用户评分列表"""
-    user_id = int(get_jwt_identity())
-
-    # 分页参数
-    from flask import request
-    page = request.args.get('page', 1, type=int)
-    page_size = request.args.get('page_size', 20, type=int)
-    sort = request.args.get('sort', 'time_desc')  # time_desc, time_asc, rating_desc, rating_asc
-
-    # 构建查询
-    query = db.session.query(
-        Rating, Movie
-    ).join(
-        Movie, Movie.movie_id == Rating.movie_id
-    ).filter(
-        Rating.user_id == user_id
-    )
-
-    # 排序
-    if sort == 'time_desc':
-        query = query.order_by(desc(Rating.rated_at))
-    elif sort == 'time_asc':
-        query = query.order_by(Rating.rated_at)
-    elif sort == 'rating_desc':
-        query = query.order_by(desc(Rating.rating))
-    elif sort == 'rating_asc':
-        query = query.order_by(Rating.rating)
-
-    # 分页
-    total = query.count()
-    results = query.limit(page_size).offset((page - 1) * page_size).all()
-
-    items = []
-    for rating, movie in results:
-        items.append({
-            "movie_id": movie.movie_id,
-            "title": movie.title,
-            "year": movie.year,
-            "genres": movie.genres,
-            "poster_url": movie.poster_url,
-            "director": movie.director,
-            "rating": rating.rating,
-            "rated_at": rating.rated_at.isoformat() if rating.rated_at else None
-        })
-
-    return jsonify({
-        "items": items,
-        "total": total,
-        "page": page,
-        "page_size": page_size
-    })
-
-
 @profile_bp.get("/comments")
 @jwt_required()
 def get_user_comments():
@@ -218,15 +163,18 @@ def get_user_comments():
     user_id = int(get_jwt_identity())
 
     # 分页参数
-    from flask import request
-    page = request.args.get('page', 1, type=int)
-    page_size = request.args.get('page_size', 20, type=int)
+    page, page_size = get_pagination(param="page_size")
 
     # 构建查询
+    # 评论列表里要带上该用户对这部电影的评分（评分可已被单独删掉，所以是外连接）
     query = db.session.query(
-        MovieComment, Movie
+        MovieComment, Movie, UserRating.rating
     ).join(
         Movie, Movie.movie_id == MovieComment.movie_id
+    ).outerjoin(
+        UserRating,
+        (UserRating.user_id == MovieComment.user_id)
+        & (UserRating.movie_id == MovieComment.movie_id)
     ).filter(
         MovieComment.user_id == user_id
     ).order_by(
@@ -238,7 +186,7 @@ def get_user_comments():
     results = query.limit(page_size).offset((page - 1) * page_size).all()
 
     items = []
-    for comment, movie in results:
+    for comment, movie, rating in results:
         items.append({
             "comment_id": comment.id,
             "movie_id": movie.movie_id,
@@ -246,6 +194,7 @@ def get_user_comments():
             "year": movie.year,
             "poster_url": movie.poster_url,
             "content": comment.content,
+            "user_rating": float(rating) if rating is not None else None,
             "created_at": comment.created_at.isoformat() if comment.created_at else None
         })
 

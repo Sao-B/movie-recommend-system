@@ -44,9 +44,7 @@ async function submit() {
     await auth.login(form.username, form.password)
     ElMessage.success('登录成功')
     router.push(route.query.redirect || '/')
-  } catch (msg) {
-    ElMessage.error(typeof msg === 'string' ? msg : '登录失败')
-  } finally {
+  } catch {} finally {
     loading.value = false
   }
 }
@@ -57,5 +55,5 @@ async function submit() {
 .auth-card    { width: 400px; }
 .card-title   { margin: 0; text-align: center; font-size: 20px; }
 .full-btn     { width: 100%; }
-.auth-footer  { text-align: center; color: #666; font-size: 14px; margin-top: 8px; }
+.auth-footer  { text-align: center; color: var(--app-text-secondary); font-size: 14px; margin-top: 8px; }
 </style>

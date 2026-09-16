@@ -2,7 +2,7 @@
 
 from sqlalchemy.orm import joinedload
 
-from .models import ModelItemFactor, ModelVersion, Movie, Rating, Recommendation
+from .models import ModelItemFactor, ModelVersion, Movie, Recommendation, UserRating
 
 
 class SqlAlchemyRecommendationRepository:
@@ -16,9 +16,9 @@ class SqlAlchemyRecommendationRepository:
 
     def get_user_ratings(self, user_id):
         return (
-            Rating.query
+            UserRating.query
             .filter_by(user_id=user_id)
-            .order_by(Rating.rated_at.desc())
+            .order_by(UserRating.rated_at.desc())
             .all()
         )
 
@@ -38,6 +38,16 @@ class SqlAlchemyRecommendationRepository:
             .options(joinedload(Recommendation.movie))
             .filter_by(user_id=user_id, model_version=version)
             .order_by(Recommendation.rank)
+            .all()
+        )
+
+    def get_popular_movies(self, limit, min_rating_count=50):
+        """冷启动兜底数据源：全站高分热门电影（评分人数达标，按均分降序）。"""
+        return (
+            Movie.query
+            .filter(Movie.avg_rating.isnot(None), Movie.rating_count >= min_rating_count)
+            .order_by(Movie.avg_rating.desc(), Movie.rating_count.desc())
+            .limit(int(limit))
             .all()
         )
 

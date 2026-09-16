@@ -1,14 +1,9 @@
 <template>
-  <el-container class="admin-layout">
-    <el-aside width="200px">
-      <el-menu
-        :default-active="activeMenu"
-        router
-        background-color="#545c64"
-        text-color="#fff"
-        active-text-color="#ffd04b"
-      >
-        <el-menu-item index="/admin">
+  <!-- 顶栏复用前台的 NavBar（App.vue 全局渲染），这里只负责侧栏 + 内容区 -->
+  <div class="admin-shell">
+    <aside class="admin-side" :style="{ width: sideWidth + 'px' }">
+      <el-menu :default-active="route.path" router>
+        <el-menu-item index="/admin/dashboard">
           <el-icon><DataAnalysis /></el-icon>
           <span>仪表盘</span>
         </el-menu-item>
@@ -25,43 +20,108 @@
           <span>评分管理</span>
         </el-menu-item>
         <el-menu-item index="/admin/models">
-          <el-icon><Setting /></el-icon>
+          <el-icon><Cpu /></el-icon>
           <span>模型管理</span>
         </el-menu-item>
       </el-menu>
-    </el-aside>
-    <el-container>
-      <el-main>
-        <router-view />
-      </el-main>
-    </el-container>
-  </el-container>
+
+      <!-- 侧栏右缘 6px 是拖拽热区：悬停出现左右箭头指针，按住可调整宽度 -->
+      <div
+        class="side-resizer"
+        :class="{ resizing: resizing }"
+        title="拖拽调整侧栏宽度"
+        @mousedown="startResize"
+      ></div>
+    </aside>
+
+    <main class="admin-main">
+      <router-view />
+    </main>
+  </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { DataAnalysis, User, Film, Star, Setting, Management } from '@element-plus/icons-vue'
+import { User, DataAnalysis, Film, Star, Cpu } from '@element-plus/icons-vue'
 
 const route = useRoute()
-const activeMenu = computed(() => route.path)
+
+const WIDTH_KEY = 'admin-side-width'
+const MIN_WIDTH = 180
+const MAX_WIDTH = 400
+
+const sideWidth = ref(Number(localStorage.getItem(WIDTH_KEY)) || 220)
+const resizing = ref(false)
+
+function startResize(event) {
+  event.preventDefault()
+  const startX = event.clientX
+  const startWidth = sideWidth.value
+  resizing.value = true
+  // 拖拽期间全局锁定指针样式并禁止选中文字，避免鼠标滑出热区后闪烁
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+
+  const onMove = (e) => {
+    sideWidth.value = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startWidth + e.clientX - startX))
+  }
+  const onUp = () => {
+    localStorage.setItem(WIDTH_KEY, String(sideWidth.value))
+    resizing.value = false
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+  }
+
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
 </script>
 
 <style scoped>
-.admin-layout {
-  height: 100vh;
+/* NavBar 高 60px 且 sticky，剩余高度给侧栏和内容区 */
+.admin-shell {
+  height: calc(100vh - 60px);
+  display: flex;
 }
 
-.el-aside {
-  background-color: #545c64;
+.admin-side {
+  position: relative;
+  flex: none;
+  background: var(--app-bg-surface);
+  border-right: 1px solid var(--app-border);
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
-.el-menu {
-  border-right: none !important;
+.admin-side :deep(.el-menu) {
+  border-right: none;
+  width: 100%;
 }
 
-.el-main {
-  background-color: #f5f5f5;
+/* 拖拽热区：默认透明，悬停/拖拽时亮起一条蓝线并显示 col-resize 指针 */
+.side-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 10;
+}
+
+.side-resizer:hover,
+.side-resizer.resizing {
+  background: rgba(64, 158, 255, 0.35);
+}
+
+.admin-main {
+  flex: 1;
+  min-width: 0;
   padding: 20px;
+  overflow-y: auto;
+  background: var(--app-bg-page);
 }
 </style>

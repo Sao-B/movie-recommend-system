@@ -37,21 +37,6 @@ export async function getUserStats() {
 }
 
 /**
- * 获取用户评分列表
- * @param {number} page - 页码
- * @param {number} pageSize - 每页数量
- * @param {string} sort - 排序方式: time_desc, time_asc, rating_desc, rating_asc
- */
-export async function getUserRatings(page = 1, pageSize = 20, sort = 'time_desc') {
-  const token = localStorage.getItem('token')
-  const response = await axios.get(`${API_BASE}/ratings`, {
-    params: { page, page_size: pageSize, sort },
-    headers: { Authorization: `Bearer ${token}` }
-  })
-  return response.data
-}
-
-/**
  * 获取用户评论列表
  * @param {number} page - 页码
  * @param {number} pageSize - 每页数量

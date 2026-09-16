@@ -119,118 +119,100 @@
       </div>
     </el-card>
 
-    <el-tabs v-model="activeTab" class="content-tabs">
-      <el-tab-pane label="我的评分" name="ratings">
-        <div class="toolbar">
-          <el-select v-model="ratingsSort" @change="loadRatings" placeholder="排序方式">
-            <el-option label="最新评分" value="time_desc" />
-            <el-option label="最早评分" value="time_asc" />
-            <el-option label="评分最高" value="rating_desc" />
-            <el-option label="评分最低" value="rating_asc" />
-          </el-select>
+    <el-card class="comments-card">
+      <template #header>
+        <div class="comments-head">
+          <span>我的评论</span>
+          <span v-if="comments.total" class="count-hint">共 {{ comments.total }} 条</span>
         </div>
+      </template>
 
-        <div v-if="ratingsLoading" class="loading">
-          <el-icon class="is-loading"><loading /></el-icon>
-          加载中...
-        </div>
+      <div v-if="commentsLoading" class="loading">
+        <el-icon class="is-loading"><loading /></el-icon>
+        加载中...
+      </div>
 
-        <div v-else-if="ratings.items.length === 0" class="empty-state">
-          <el-empty description="还没有评分记录" />
-        </div>
+      <div v-else-if="comments.items.length === 0" class="empty-state">
+        <el-empty description="还没有发表过评论" :image-size="80" />
+      </div>
 
-        <div v-else class="ratings-list">
-          <div v-for="item in ratings.items" :key="item.movie_id" class="rating-item">
-            <router-link :to="`/movies/${item.movie_id}`" class="movie-link">
-              <img
-                v-if="item.poster_url"
-                :src="item.poster_url"
-                :alt="item.title"
-                class="movie-poster"
-              />
-              <div v-else class="poster-placeholder">暂无海报</div>
-            </router-link>
-
-            <div class="rating-info">
-              <router-link :to="`/movies/${item.movie_id}`" class="movie-title">
-                {{ item.title }} <span v-if="item.year" class="year">({{ item.year }})</span>
-              </router-link>
-              <div class="movie-meta">
-                <span v-if="item.genres" class="genres">{{ item.genres }}</span>
-                <span v-if="item.director" class="director">导演: {{ item.director }}</span>
-              </div>
-              <div class="rating-detail">
-                <el-rate :model-value="item.rating" disabled allow-half />
-                <span class="rating-value">{{ item.rating }}</span>
-                <span v-if="item.rated_at" class="rated-time">{{ formatTime(item.rated_at) }}</span>
-              </div>
+      <div v-else class="comment-list">
+        <div v-for="item in comments.items" :key="item.comment_id" class="comment-item">
+          <!-- 编辑态：星级与正文一起改，点「保存」才落库。同一时刻只编辑一条 -->
+          <template v-if="editingId === item.comment_id">
+            <div class="edit-row">
+              <span class="movie-title">{{ item.title }}</span>
+              <el-rate v-model="draftRating" :max="5" allow-half show-score size="small" />
             </div>
-          </div>
-        </div>
-
-        <el-pagination
-          v-if="ratings.total > 0"
-          v-model:current-page="ratingsPage"
-          :page-size="pageSize"
-          :total="ratings.total"
-          layout="prev, pager, next, total"
-          @current-change="loadRatings"
-          class="pagination"
-        />
-      </el-tab-pane>
-
-      <el-tab-pane label="我的评论" name="comments">
-        <div v-if="commentsLoading" class="loading">
-          <el-icon class="is-loading"><loading /></el-icon>
-          加载中...
-        </div>
-
-        <div v-else-if="comments.items.length === 0" class="empty-state">
-          <el-empty description="还没有发表评论" />
-        </div>
-
-        <div v-else class="comments-list">
-          <div v-for="item in comments.items" :key="item.comment_id" class="comment-item">
-            <router-link :to="`/movies/${item.movie_id}`" class="movie-link">
-              <img
-                v-if="item.poster_url"
-                :src="item.poster_url"
-                :alt="item.title"
-                class="movie-poster"
-              />
-              <div v-else class="poster-placeholder">暂无海报</div>
-            </router-link>
-
-            <div class="comment-content">
-              <router-link :to="`/movies/${item.movie_id}`" class="movie-title">
-                {{ item.title }} <span v-if="item.year" class="year">({{ item.year }})</span>
-              </router-link>
-              <p class="comment-text">{{ item.content }}</p>
-              <span v-if="item.created_at" class="comment-time">{{ formatTime(item.created_at) }}</span>
+            <el-input
+              v-model="draft"
+              type="textarea"
+              :rows="3"
+              maxlength="500"
+              show-word-limit
+              placeholder="修改你的评论"
+            />
+            <div class="edit-actions">
+              <el-button size="small" @click="cancelEdit">取消</el-button>
+              <el-button
+                size="small"
+                type="primary"
+                :loading="saving"
+                :disabled="!draft.trim()"
+                @click="saveEdit(item)"
+              >
+                保存
+              </el-button>
             </div>
-          </div>
-        </div>
+          </template>
 
-        <el-pagination
-          v-if="comments.total > 0"
-          v-model:current-page="commentsPage"
-          :page-size="pageSize"
-          :total="comments.total"
-          layout="prev, pager, next, total"
-          @current-change="loadComments"
-          class="pagination"
-        />
-      </el-tab-pane>
-    </el-tabs>
+          <template v-else>
+            <div class="comment-head">
+              <router-link :to="`/movies/${item.movie_id}`" class="movie-title">
+                {{ item.title }}<span v-if="item.year" class="year"> ({{ item.year }})</span>
+              </router-link>
+              <!-- 评分与影评是一起发表的，星级直接挂在这张评论卡上（评分被单独删掉则不显示） -->
+              <span v-if="item.user_rating" class="comment-score">
+                <el-rate :model-value="item.user_rating" disabled allow-half size="small" />
+                <span class="score-value">{{ item.user_rating }}</span>
+              </span>
+            </div>
+
+            <div class="comment-text">{{ item.content }}</div>
+
+            <div class="comment-foot">
+              <span class="comment-time">{{ formatTime(item.created_at) }}</span>
+              <el-button text type="primary" size="small" @click="startEdit(item)">编辑</el-button>
+              <el-button text type="danger" size="small" @click="handleDeleteComment(item)">
+                删除
+              </el-button>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <el-pagination
+        v-if="comments.total > 0"
+        v-model:current-page="commentsPage"
+        :page-size="pageSize"
+        :total="comments.total"
+        layout="prev, pager, next, total"
+        @current-change="loadComments"
+        class="pagination"
+      />
+    </el-card>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { Loading } from '@element-plus/icons-vue'
-import { getUserInfo, updateUserInfo, getUserStats, getUserRatings, getUserComments } from '@/api/profile'
-import { ElMessage } from 'element-plus'
+import { getUserInfo, updateUserInfo, getUserStats, getUserComments } from '@/api/profile'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { apiComments } from '@/api/comments'
+import { apiRatings } from '@/api/ratings'
 import { useAuthStore } from '@/stores/auth'
+import { formatRelative as formatTime } from '@/utils/format'
 
 const auth = useAuthStore()
 
@@ -261,17 +243,7 @@ const stats = ref({
   top_directors: []
 })
 
-const activeTab = ref('ratings')
 const pageSize = 20
-
-// 评分列表
-const ratingsLoading = ref(false)
-const ratingsPage = ref(1)
-const ratingsSort = ref('time_desc')
-const ratings = ref({
-  items: [],
-  total: 0
-})
 
 // 评论列表
 const commentsLoading = ref(false)
@@ -280,6 +252,24 @@ const comments = ref({
   items: [],
   total: 0
 })
+
+// 正在编辑的那一条（同一时刻只许一条）及其草稿
+const editingId = ref(null)
+const draft = ref('')
+const draftRating = ref(0)
+const saving = ref(false)
+
+function startEdit(item) {
+  editingId.value = item.comment_id
+  draft.value = item.content
+  draftRating.value = item.user_rating ?? 0
+}
+
+function cancelEdit() {
+  editingId.value = null
+  draft.value = ''
+  draftRating.value = 0
+}
 
 const hasRatings = computed(() => {
   return stats.value.total_ratings > 0
@@ -292,23 +282,6 @@ const maxRatingCount = computed(() => {
 
 function getBarWidth(count) {
   return (count / maxRatingCount.value) * 100
-}
-
-function formatTime(isoString) {
-  const date = new Date(isoString)
-  const now = new Date()
-  const diff = now - date
-
-  const minutes = Math.floor(diff / 60000)
-  const hours = Math.floor(diff / 3600000)
-  const days = Math.floor(diff / 86400000)
-
-  if (minutes < 1) return '刚刚'
-  if (minutes < 60) return `${minutes}分钟前`
-  if (hours < 24) return `${hours}小时前`
-  if (days < 7) return `${days}天前`
-
-  return date.toLocaleDateString('zh-CN')
 }
 
 function formatDate(isoString) {
@@ -331,9 +304,8 @@ async function loadUserInfo() {
       avatar_url: userInfo.value.avatar_url || '',
       bio: userInfo.value.bio || ''
     }
-  } catch (error) {
-    console.error('加载用户信息失败:', error)
-    ElMessage.error('加载用户信息失败')
+  } catch {
+    // 错误提示由 axios 拦截器统一弹出
   }
 }
 
@@ -349,9 +321,8 @@ async function handleUpdateInfo() {
     if (auth.user) {
       auth.user.username = updated.username
     }
-  } catch (error) {
-    console.error('更新用户信息失败:', error)
-    ElMessage.error(error.response?.data?.error || '更新失败')
+  } catch {
+    // 错误提示由 axios 拦截器统一弹出
   } finally {
     updating.value = false
   }
@@ -368,17 +339,6 @@ async function loadStats() {
   }
 }
 
-async function loadRatings() {
-  try {
-    ratingsLoading.value = true
-    ratings.value = await getUserRatings(ratingsPage.value, pageSize, ratingsSort.value)
-  } catch (error) {
-    console.error('加载评分列表失败:', error)
-  } finally {
-    ratingsLoading.value = false
-  }
-}
-
 async function loadComments() {
   try {
     commentsLoading.value = true
@@ -390,10 +350,67 @@ async function loadComments() {
   }
 }
 
+// 保存编辑：与详情页影评卡一致，先落评分、再落正文，都点了保存才提交
+async function saveEdit(item) {
+  const content = draft.value.trim()
+  if (!content) {
+    ElMessage.warning('评论内容不能为空')
+    return
+  }
+
+  // 0 不是合法评分（后端只收 0.5 ~ 5.0），不当成「改了」
+  const rating = Number(draftRating.value)
+  const ratingChanged = rating > 0 && rating !== (item.user_rating ?? 0)
+  const contentChanged = content !== item.content
+
+  // 什么都没改：只收起编辑区，不去白刷一次 edited_at
+  if (!ratingChanged && !contentChanged) {
+    cancelEdit()
+    return
+  }
+
+  saving.value = true
+  try {
+    if (ratingChanged) await apiRatings.submit(item.movie_id, rating)
+    if (contentChanged) await apiComments.update(item.comment_id, content)
+    ElMessage.success(
+      ratingChanged && contentChanged ? '评分与评论已更新' : ratingChanged ? '评分已更新' : '评论已更新'
+    )
+    cancelEdit()
+    // 评论时间与观影统计都会变，一起刷新
+    await Promise.all([loadComments(), loadStats()])
+  } catch {} finally {
+    saving.value = false
+  }
+}
+
+// 删除评论。评分与影评是一起发表的，这里连同评分一起删（后端在同一次提交里删两行），
+// 删完观影统计里的「已评分电影 / 平均评分 / 分布」也会变，所以一起刷新。
+async function handleDeleteComment(item) {
+  try {
+    await ElMessageBox.confirm(
+      `删除《${item.title}》的评论会连同你对它的评分一起删除，确定吗？`,
+      '提示',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return // 用户取消
+  }
+
+  try {
+    await apiComments.delete(item.comment_id, true)
+    ElMessage.success('评论与评分已删除')
+    // 删掉的是当前页最后一条时，回退一页再刷新，避免停在空页
+    if (comments.value.items.length === 1 && commentsPage.value > 1) {
+      commentsPage.value -= 1
+    }
+    await Promise.all([loadComments(), loadStats()])
+  } catch {}
+}
+
 onMounted(async () => {
   await loadUserInfo()
   await loadStats()
-  await loadRatings()
   await loadComments()
 })
 </script>
@@ -422,7 +439,7 @@ onMounted(async () => {
 }
 
 .user-avatar {
-  border: 3px solid #f0f0f0;
+  border: 3px solid var(--app-border-light);
 }
 
 .avatar-text {
@@ -445,14 +462,14 @@ onMounted(async () => {
 .username {
   margin: 0;
   font-size: 24px;
-  color: #303133;
+  color: var(--app-text);
 }
 
 .user-meta {
   display: flex;
   gap: 16px;
   font-size: 14px;
-  color: #909399;
+  color: var(--app-text-muted);
 }
 
 .user-id {
@@ -462,20 +479,20 @@ onMounted(async () => {
 .bio {
   margin: 8px 0 0 0;
   font-size: 15px;
-  color: #606266;
+  color: var(--app-text-secondary);
   line-height: 1.6;
 }
 
 .bio-empty {
   margin: 8px 0 0 0;
   font-size: 14px;
-  color: #c0c4cc;
+  color: var(--app-text-muted);
   font-style: italic;
 }
 
 .form-hint {
   font-size: 12px;
-  color: #909399;
+  color: var(--app-text-muted);
   margin-top: 4px;
 }
 
@@ -491,7 +508,7 @@ onMounted(async () => {
 .loading {
   text-align: center;
   padding: 40px;
-  color: #909399;
+  color: var(--app-text-muted);
 }
 
 .stats-grid {
@@ -504,7 +521,7 @@ onMounted(async () => {
 .stat-item {
   text-align: center;
   padding: 20px;
-  background: #f5f7fa;
+  background: var(--app-fill);
   border-radius: 8px;
 }
 
@@ -517,7 +534,7 @@ onMounted(async () => {
 
 .stat-label {
   font-size: 14px;
-  color: #606266;
+  color: var(--app-text-secondary);
 }
 
 .preferences {
@@ -527,7 +544,7 @@ onMounted(async () => {
 
 .preference-section h4 {
   margin: 0 0 12px 0;
-  color: #303133;
+  color: var(--app-text);
   font-size: 16px;
 }
 
@@ -551,7 +568,7 @@ onMounted(async () => {
 
 .bar-label {
   font-size: 14px;
-  color: #606266;
+  color: var(--app-text-secondary);
   text-align: right;
 }
 
@@ -572,80 +589,58 @@ onMounted(async () => {
 
 .bar-count {
   font-size: 14px;
-  color: #606266;
+  color: var(--app-text-secondary);
   min-width: 30px;
 }
 
-.content-tabs {
-  background: white;
-  padding: 20px;
-  border-radius: 8px;
+/* 这一块原来写死 background:white，夜间模式下是块白斑，现改为跟随主题的表面色 */
+.comments-card {
+  background: var(--app-bg-surface);
 }
 
-.toolbar {
-  margin-bottom: 20px;
+.comments-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--app-text);
+}
+
+.count-hint {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--app-text-muted);
 }
 
 .empty-state {
   padding: 40px 0;
 }
 
-.ratings-list,
-.comments-list {
+.comment-list {
   display: grid;
-  gap: 16px;
+  gap: 12px;
 }
 
-.rating-item,
+/* 与详情页的评论卡同一套观感：浅填充底 + 圆角，颜色全部走主题变量 */
 .comment-item {
-  display: flex;
-  gap: 16px;
   padding: 16px;
-  background: #f5f7fa;
+  background: var(--app-fill);
   border-radius: 8px;
-  transition: background 0.2s;
 }
 
-.rating-item:hover,
-.comment-item:hover {
-  background: #e8eaf0;
-}
-
-.movie-link {
-  flex-shrink: 0;
-}
-
-.movie-poster {
-  width: 80px;
-  height: 120px;
-  object-fit: cover;
-  border-radius: 4px;
-}
-
-.poster-placeholder {
-  width: 80px;
-  height: 120px;
+.comment-head {
   display: flex;
   align-items: center;
-  justify-content: center;
-  background: #dcdfe6;
-  border-radius: 4px;
-  font-size: 12px;
-  color: #909399;
-}
-
-.rating-info,
-.comment-content {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
 }
 
 .movie-title {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 500;
-  color: #303133;
+  color: var(--app-text);
   text-decoration: none;
 }
 
@@ -654,43 +649,58 @@ onMounted(async () => {
 }
 
 .year {
-  color: #909399;
-  font-weight: normal;
+  color: var(--app-text-muted);
+  font-weight: 400;
 }
 
-.movie-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 14px;
-  color: #606266;
-}
-
-.rating-detail {
-  display: flex;
+.comment-score {
+  display: inline-flex;
   align-items: center;
-  gap: 12px;
-  margin-top: auto;
+  gap: 8px;
 }
 
-.rating-value {
-  font-size: 18px;
-  font-weight: bold;
-  color: #409eff;
-}
-
-.rated-time,
-.comment-time {
-  font-size: 12px;
-  color: #909399;
-  margin-left: auto;
+.score-value {
+  font-size: 13px;
+  font-weight: 500;
+  color: #e6a23c;
 }
 
 .comment-text {
   margin: 0;
   font-size: 14px;
-  color: #606266;
+  color: var(--app-text-secondary);
   line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 编辑态：片名 + 可点的星星在上，正文框在下 */
+.edit-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.edit-actions {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.comment-foot {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.comment-time {
+  font-size: 12px;
+  color: var(--app-text-muted);
+  margin-right: auto;
 }
 
 .pagination {

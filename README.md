@@ -56,12 +56,13 @@ MovieLens 用户不会写入 `users`，也不会把 MovieLens 推荐写入应用
 
 1. 从 HDFS 读取 MovieLens 评分，并将 MovieLens 用户 ID 取负；
 2. 从 MySQL 读取 `user_ratings`，并与 `users` 表做半连接，只保留真实系统用户；
-3. MovieLens 评分按 `train_ratio` 划分训练集和测试集；系统用户评分全部加入训练集；
+3. MovieLens 评分按 `train_ratio` 做确定性划分（每条评分按 `md5(userId:movieId)` 哈希分桶，每个用户在训练/测试两侧都有评分，结果可复现）；系统用户评分全部加入训练集；
 4. 使用合并后的评分训练非负显式反馈 ALS；
 5. 只使用 MovieLens 测试集计算 RMSE，保证指标口径稳定；
 6. 保存当前模型的电影隐因子；
-7. 生成全量用户推荐后，只保留 `users.id` 对应的系统用户；
-8. 电影因子和批量推荐写入完成后，再将模型从 `building` 发布为 `active`。
+7. 生成全量用户推荐后，只保留 `users.id` 对应的系统用户，并把 `predicted_rating` 截断回评分量纲 [0.5, 5.0]；
+8. 电影因子和批量推荐写入完成后，再将模型从 `building` 发布为 `active`；
+9. 发布成功后清理非当前版本的 `recommendations` / `model_item_factors` 残留数据，防止表无限膨胀。
 
 ### 2.2 在线推荐
 
@@ -101,10 +102,10 @@ Project/
 ├── backend/
 │   ├── app.py                   # Flask 入口
 │   ├── config.py                # 从根目录 config.yaml 加载配置
-│   ├── recommendation_core.py   # 在线向量求解与排序
-│   ├── recommendation_service.py
 │   └── app/
 │       ├── models.py
+│       ├── recommendation_core.py   # 在线向量求解与排序
+│       ├── recommendation_service.py
 │       └── routes/
 ├── frontend/
 │   └── src/
@@ -168,11 +169,10 @@ als:
   cold_start_strategy: drop
   train_ratio: 0.8
   top_n: 20
-  ml_user_offset: 10000000
 
 flask:
   host: 127.0.0.1
-  port: 5000
+  port: 8000
   debug: false
   secret_key: replace_with_a_random_secret
 ```
@@ -189,9 +189,7 @@ flask:
 mysql -u root -p < sql/schema.sql
 ```
 
-`schema.sql` 会创建：
-
-`users`、`movies`、`ratings`（legacy）、`user_ratings`、`model_versions`、`model_item_factors` 和 `recommendations`。
+`schema.sql` 共创建 9 张表：`users`、`movies`、`ratings`（legacy 只读）、`user_ratings`、`movie_rating_stats`、`movie_comments`、`model_versions`、`model_item_factors` 和 `recommendations`。
 
 ### 6.2 已有数据库
 
@@ -200,9 +198,34 @@ mysql -u root -p < sql/schema.sql
 ```bash
 mysqldump -u root -p --single-transaction movie_recommend > movie_recommend_backup.sql
 mysql -u root -p movie_recommend < sql/migrations/001_add_recommendation_model_tables.sql
+mysql -u root -p movie_recommend < sql/migrations/001_add_user_role.sql
+mysql -u root -p movie_recommend < sql/migrations/001_add_movie_metadata_fields.sql
+mysql -u root -p movie_recommend < sql/migrations/002_create_movie_comments_table.sql
+mysql -u root -p movie_recommend < sql/migrations/004_add_user_profile_fields.sql
+mysql -u root -p movie_recommend < sql/migrations/005_merge_ratings_into_user_ratings.sql
+mysql -u root -p movie_recommend < sql/migrations/006_add_movie_rating_stats.sql
+mysql -u root -p movie_recommend < sql/migrations/007_add_comment_edited_at.sql
 ```
 
-迁移脚本不会复制、删除或自动解释旧 `ratings` 数据。迁移支持重复执行，`model_versions.rank` 已使用 MySQL 保留字安全写法。
+`sql/migrations/` 目录现有脚本：
+
+| 脚本 | 作用 | 注意 |
+|---|---|---|
+| `001_add_recommendation_model_tables.sql` | 建 `user_ratings`、`model_versions`、`model_item_factors`、`recommendations` | 非破坏性，不改动 legacy `ratings` |
+| `001_add_user_role.sql` | 加 `users.role` 字段与角色索引，并插入默认 admin 账号（密码 `admin123`） | 与上一个脚本编号撞车，需分别执行。注意其 `ALTER TABLE ... ADD COLUMN` 不幂等，已有 `role` 列时重跑会报 `Duplicate column name`。插入的 admin 哈希由 werkzeug `generate_password_hash` 生成（scrypt），与后端校验一致；首次部署后应立即修改该密码 |
+| `001_add_movie_metadata_fields.sql` | 加 `movies` 的海报、简介、演职员等扩展字段与索引 | 同上 |
+| `002_create_movie_comments_table.sql` | 建 `movie_comments` 表 | 缺失会导致评论接口报表不存在 |
+| `004_add_user_profile_fields.sql` | 加 `users.avatar_url`、`users.bio` | |
+| `005_merge_ratings_into_user_ratings.sql` | 把 legacy `ratings` 中的评分合并进 `user_ratings` | 幂等，可重复执行 |
+| `006_add_movie_rating_stats.sql` | 建 `movie_rating_stats` 表（MovieLens 五档分布） | 建表不灌数据，建完必须跑 `scripts/build_ml_rating_stats.py`，否则详情页「评分统计」只有本站评分 |
+| `007_add_comment_edited_at.sql` | 给 `movie_comments` 加 `edited_at`（影评「上次修改于」） | 缺失会让影评接口报表列不存在（模型会 select 该列）。`ADD COLUMN` 不幂等，重跑报 1060 |
+| `003_rename_ratings_table.sql` | 已废弃，仅用于说明历史 | 重命名语句从未启用，且方向与最终方案相反，不要执行 |
+
+> 三个 `001_*.sql` 编号撞车（是不同时间点分别新增的），执行顺序不影响结果，但建议按上表顺序执行，`002` 不要漏。
+
+自 2026-09-14 起，`user_ratings` 是评分的唯一事实来源：应用写入、Spark 训练、在线推荐都只读写 `user_ratings`，legacy `ratings` 仅作只读保留。当前数据库中 `ratings` 表为 0 行、且没有任何外键。
+
+除 `005` 会把 `ratings` 中 `user_ratings` 尚未存在的评分行复制过来之外，其余迁移都不会复制或删除已有数据。所有迁移都支持重复执行，`model_versions.rank` 已使用 MySQL 保留字安全写法。
 
 迁移后建议检查：
 
@@ -243,7 +266,12 @@ spark-submit --master local[*] spark/preprocess.py
 
 预处理会解析电影年份、去除无效行、按 `movie_id` 去重，并写入 MySQL `movies` 表。
 
-> 已知限制：`spark/preprocess.py` 当前通过 JDBC `overwrite` 写 `movies`。完整 schema 中 `user_ratings` 和 `recommendations` 对 `movies` 存在外键，数据库初始化后再次执行预处理可能因 MySQL 不允许清空被外键引用的表而失败。当前不要把这条命令当作可重复的生产刷新流程；应先改为 staging/upsert 或设计明确的元数据刷新迁移。
+> 已知限制：`spark/preprocess.py` 通过 JDBC `overwrite` 写 `movies`，即先清空整表，再写入只含 `movie_id`、`title`、`genres`、`year` 四列的数据。
+>
+> - **外键**：引用 `movies` 的外键实测有两条——`movie_comments.movie_id` 与 `movie_rating_stats.movie_id`（当前活库；`schema.sql` 中 legacy `ratings` 的 DDL 还声明了 `movie_id → movies.movie_id` 与 `user_id → users.id` 两条，按该 DDL 全新建库时会再多两条，实测共 7 条）。`user_ratings` 只对 `users.id` 建了外键，`recommendations` 和 `model_item_factors` 都没有指向 `movies` 的外键，`schema.sql` 的 `movies` 注释与之一致。MySQL 不允许 TRUNCATE 被外键引用的表，且与引用表里有没有数据无关，所以只要 `movie_comments`（或按 DDL 建库时的 `ratings`）存在，再次执行预处理就会失败。
+> - **元数据丢失**：即使绕过外键，`movies` 上由 `import_movie_stats.py`、`fetch_posters.py` 写入的 `avg_rating`、`rating_count`、`poster_url`、`overview`、`director` 等字段也会被一并清空；`movie_rating_stats` 依赖 `movies` 行存在，重载 `movies` 后必须重跑 `scripts/build_ml_rating_stats.py` 重建，否则详情页「评分统计」只剩本站评分。
+>
+> 当前不要把这条命令当作可重复的生产刷新流程；应先改为 staging/upsert 或设计明确的元数据刷新迁移。
 
 ### 7.4 运行 ALS 训练
 
@@ -256,7 +284,7 @@ bash scripts/run_training.sh
 - HDFS 中的评分路径存在；
 - `user_ratings`、`users` 和模型表已经创建；
 - MySQL Connector/J 可被 Spark 加载；
-- `ml_user_offset` 大于当前 `users.id` 最大值；
+- `users.id` 全部为正整数（训练前会校验，见 1.1；系统用户与取负后的 MovieLens 用户 ID 天然隔离，不需要偏移量）；
 - HDFS、MySQL 地址可以从 Spark 所在节点访问。
 
 训练失败时，正在构建的模型会被标记为 `retired`，旧的 active 模型不应被替换。训练成功后可以检查：
@@ -313,7 +341,9 @@ npm install
 npm run dev
 ```
 
-Vite 会把 `/api/*` 代理到 `http://localhost:5000`。如果页面显示 `Total 0` 或“请求错误”，先确认 Flask 是否监听 5000 端口，再检查 MySQL 连接和后端终端日志。
+Vite 会把 `/api/*` 代理到 `http://localhost:8000`。如果页面显示 `Total 0` 或“请求错误”，先确认 Flask 是否监听 8000 端口，再检查 MySQL 连接和后端终端日志。
+
+> 端口说明：本项目后端固定使用 `8000`（`config.yaml` 的 `flask.port`，前端 `vite.config.js` 的代理目标必须与之保持一致）。早期文档里的 `5000` 是历史值——本机因系统端口策略不允许绑定 5000/5001，已整体迁移到 8000。
 
 > `scripts/start_dev.sh` 目前仍使用旧的虚拟环境相对路径判断，在 Linux 上可能回退到系统 Python。Linux 联合启动前应先确认脚本中的 Python 路径与实际虚拟环境一致。
 
@@ -324,17 +354,45 @@ Vite 会把 `/api/*` 代理到 `http://localhost:5000`。如果页面显示 `Tot
 | `POST` | `/api/auth/register` | 注册并返回 JWT | 否 |
 | `POST` | `/api/auth/login` | 登录并返回 JWT | 否 |
 | `GET` | `/api/movies/` | 分页、关键词、类型、年份筛选 | 否 |
-| `GET` | `/api/movies/<id>` | 电影详情及系统用户平均评分 | 否 |
+| `GET` | `/api/movies/<id>` | 电影详情（含 MovieLens 平均分与评分数） | 否 |
+| `GET` | `/api/movies/<id>/rating-stats` | 评分统计（MovieLens 与本站评分合并后的平均分、五档分布；带 token 时附当前用户评分） | 否* |
 | `GET` | `/api/movies/genres` | 类型列表 | 否 |
-| `POST` | `/api/ratings/` | 新增或更新当前用户评分 | 是 |
-| `GET` | `/api/ratings/me` | 当前用户评分历史 | 是 |
+| `POST` | `/api/ratings/` | 新增或更新当前用户评分（`rating` 取值范围 **0.5 ~ 5.0**，0 与其它越界值一律 400；评分可单独提交，但详情页的「发表」要求与影评成对） | 是 |
+| `DELETE` | `/api/ratings/<movie_id>` | 删除自己对该电影的评分（**只删评分**，影评留在原地退成「仅自己可见」；详情页影评卡片的「删除 → 保留影评」会调它） | 是 |
+| `POST` | `/api/movies/<id>/comments` | 发表影评（正文必填，**且要求作者此刻已有评分**，否则 400——评分与影评成对发表；同一 user 对同一电影只保留一条，重复提交即更新正文并记 `edited_at`） | 是 |
+| `GET` | `/api/movies/<id>/comments` | 影评列表（附带作者星级；另用 `my_comment` 单独返回当前用户那条，供置顶展示） | 否* |
+| `PUT` | `/api/comments/<id>` | 编辑自己的影评（正文必填，403=非本人，404=不存在；作者没有评分时改草稿走这条） | 是 |
+| `DELETE` | `/api/comments/<id>` | 删除自己的影评；带 `?with_rating=1` 时连同自己的评分一起删（详情页影评卡片「删除 → 不保留」走这条，两行同一次提交） | 是 |
+| `GET`/`PUT` | `/api/profile/info` | 个人信息读取 / 修改 | 是 |
+| `GET` | `/api/profile/stats` | 观影统计（评分分布、最爱类型/导演） | 是 |
+| `GET` | `/api/profile/comments` | 我的评论（分页，附带我在该片评分的星级） | 是 |
+| `GET` | `/api/profile/comments` | 我的评论（分页） | 是 |
 | `GET` | `/api/recommendations/` | 当前用户推荐 | 是 |
+| `GET` | `/api/admin/stats` | 系统统计（用户/电影/评分/推荐量、active 模型） | admin |
+| `GET`/`POST` | `/api/admin/users` | 用户列表 / 新建用户 | admin |
+| `PATCH`/`DELETE` | `/api/admin/users/<id>` | 修改 / 删除用户 | admin |
+| `GET` | `/api/admin/movies` | 电影列表 | admin |
+| `PATCH`/`DELETE` | `/api/admin/movies/<id>` | 修改 / 删除电影 | admin |
+| `GET` | `/api/admin/ratings` | 评分列表 | admin |
+| `DELETE` | `/api/admin/ratings/<id>` | 删除评分 | admin |
+| `GET` | `/api/admin/models` | 模型版本列表 | admin |
+| `POST` | `/api/admin/models/<version>/activate` | 激活模型 | admin |
+| `DELETE` | `/api/admin/models/<version>` | 删除模型（active 不可删） | admin |
 
 需要鉴权的请求附带：
 
 ```http
 Authorization: Bearer <JWT>
 ```
+
+\* `/api/movies/<id>/rating-stats` 的可选鉴权：未登录也能拿到统计；若带 `Authorization` 头，额外返回 `my_rating`（当前用户对该片的评分，未评过为 `null`），用于详情页评分控件的回显。
+
+\* `/api/movies/<id>/comments` 同样身份可选：游客也能读影评列表，不会 401；带 token 时额外返回 `my_comment`（当前用户在这部电影下的影评，没有则为 `null`），详情页据此在原输入框的位置置顶展示自己的影评。列表里每条影评都带 `visible` 字段——作者当前没有有效评分的影评对外隐藏（例如在个人中心把这部片子的评分删掉了，或在影评卡片的「删除」里选了「保留影评」），只有作者本人请求时才会出现在列表和自己的 `my_comment` 里。
+
+> 统计口径：**MovieLens 全量评分 + 本站 `user_ratings` 合并**——平均分按评分条数加权、五档分布逐档相加，接口响应与页面上都不区分来源。
+> MovieLens 侧的分档计数来自 `movie_rating_stats` 表（`scripts/build_ml_rating_stats.py` 聚合 `data/raw/ratings.csv` 生成），
+> 精确总和用该表的 `rating_sum`（`movies.avg_rating` 只有 2 位小数，精度不足以做加权平均）。
+> 例如电影 318：`count` = 102,930 = 102,929 条 MovieLens + 1 条本站评分，`average` = 4.4。
 
 评分示例：
 
@@ -354,13 +412,29 @@ Authorization: Bearer <JWT>
 - 按电影名、类型和年份筛选；
 - 按热门度（评分数 ≥ 100）、评分高低、上映时间排序；
 - 查看电影详情（海报、简介、导演、演员、国家、语言、时长）；
-- 系统用户平均评分与评分人数展示。
+- 详情页展示评分统计（评分人数、平均分与五档分布；评分人数 = MovieLens 评分用户数 + 本站用户评分数，不区分评分来源）。
 
 ### 10.2 用户评分与评论
 - 用户注册、登录和 JWT 持久化；
-- 登录后提交半星评分（0.5 - 5.0）；
-- 发表电影评论；
-- 评论区显示用户名、发表时间和该用户的评分星级（未评分不显示星星）；
+- 详情页把评分与影评合成**一个动作、缺一不可**：录入区里**用户名 + 半星评分控件（0.5 - 5.0）排在评论框上方**（用户名在星星左侧），「发表」按钮在评论框下方，只有「打了分且写了正文」按钮才点得动，缺哪一半会在下面说明（「还差一个评分…」/「还差一句影评…」）；
+- 提交顺序固定为**先落评分、再落影评**（`POST /api/ratings/` → `POST /api/movies/<id>/comments`）：服务端同样要求「有评分的影评」，绕过前端直接发也会 400；评分没改动时也不会白写一遍评分行；
+- 评分可修改、可覆盖（同一用户对同一电影只保留最新一条），可在个人中心删除；
+- 评分只能在 **0.5 ~ 5.0** 之间取值：详情页的评分控件不会「打 0 分」（Element Plus 的 `clearable` 已关掉，**点同一颗星两次也不会清零**），后端同样不接受 0（返回 400）；
+- **星星旁边不再有「删除」**：评分不再单独撤销，撤销入口只有影评卡片上的「删除」（置顶那条与时间线里自己那条是同一个组件，行为完全一致）；
+- 点「删除」会问「**这条影评草稿要保留吗**」，两个出口分别落在两个接口上：
+  - **保留** → 只删评分（`DELETE /api/ratings/<movie_id>`，`user_ratings` 那一行被**硬删除**、不是改成 0 分），影评留在原地只是退成「仅自己可见」（带标签），并提示「评分已删除，这条影评现在仅你自己可见」；重新评分（0.5 星及以上）后同一条影评自动重新公开，不需要重新发表；此后该评分不再计入统计，下一次 ALS 训练也不会带上这条；
+  - **不保留** → 评分与影评**一起删**（`DELETE /api/comments/<id>?with_rating=1`，两行在同一次 commit 里删掉），提示「影评与评分已删除」，置顶那块随即**变回评论输入框**；
+  - 作者本来就没有评分（上一步选过「保留」）时没有评分可删，只有简单问法「确定要删除这条影评吗？」；点 X / Esc 关掉确认框则什么都不删；
+  - 个人中心「我的评分」里同样能单独删除评分（同样先确认）；
+- 同一用户对同一电影只保留一条影评，重复提交即更新（不追加）；
+- **发表之后表单收起，不再有「修改」按钮**：输入框原来的位置被自己的影评顶上去（置顶展示，即那张带「我的影评」标签的卡片），表单只会在「还没发表」时出现；
+  - **改正文** → 影评卡片上的「编辑」（就地编辑，走 `PUT /api/comments/<id>`）；「编辑」区里星星与正文一起改，点「保存」才一起落库；什么都没改就直接收起，不会白刷一次 `edited_at`；
+  - **改评分** → 也在「编辑」里：**展示态的星星一律只读**（谁都不能直接点着改），进编辑态后星星才可点，值先落在草稿上，**点「保存」才落库**（`POST /api/ratings/`）；只改评分不改正文时不写 `edited_at`；控件不开 `clearable`，点同一颗星不会归零；
+  - **编辑互斥** → 全页同时只允许一条影评处于编辑态：置顶那条、时间线里自己那条、别人的影评互相排他，谁先点「编辑」谁进入；**其余卡片上的操作（「编辑」和「删除」）全部禁用**，被锁住的卡片整体压暗（悬停提示「已有另一条影评正在编辑」），`remove()` 与 `onStartEdit()` 里也各有一道 `if (props.editLocked) return` 兜底，程序化触发同样不生效；
+- 时间只在影评卡片**底部显示一处**：「发布于 …」（恒为发表时间 `created_at`，永不改变）与「上次修改于 …」（`edited_at`，未编辑过的影评为 `null`，此时不显示这一行）；卡片右上角不再单列时间；
+- 自己那条影评除置顶展示外，仍留在下方时间线里（同一份数据）；删除行为两处一致，编辑则受上面的互斥约束；置顶展示块与时间线之间有一条分割线；
+- 评论区显示用户名、发表时间和该用户的评分星级（无有效评分时不显示星星）；星级取列表接口返回的值，改过评分后由列表刷新带回；
+- 改了评分或影评却没点「发表」就离开详情页（含切换路由、刷新/关标签页），会弹确认框提醒，可选择「提交并离开」或「不提交，直接离开」；
 - 评论按时间倒序排列，支持分页浏览。
 
 ### 10.3 个性化推荐
@@ -372,6 +446,12 @@ Authorization: Bearer <JWT>
 ### 10.4 导航与交互
 - 顶部导航栏，用户名下拉菜单（个人主页、设置、退出登录）；
 - 下拉箭头随机方向旋转动画（顺时针/逆时针，返回时反向）。
+
+### 10.5 个人中心
+- 展示与编辑个人资料（用户名、头像、签名）；
+- 观影统计：已评分数量、平均分、发表评论数，以及评分分布与最爱类型/导演；
+- 「我的评分」分页列表（支持按时间/评分排序），每条可删除该评分（二次确认，删完同步刷新统计）；
+- 「我的评论」分页列表。
 
 没有 active 模型时，推荐页显示空状态，这是正常状态，不代表电影数据丢失。
 
@@ -386,18 +466,19 @@ npm run build --prefix frontend
 git diff --check
 ```
 
-当前测试覆盖：
+当前测试覆盖（共 21 个，`discover` 默认收集全部）：
 
-- MovieLens 与系统用户 ID 命名空间隔离；
-- offset 冲突和 Spark 整数溢出校验；
-- ALS 输入读取 `user_ratings`，不读取 legacy `ratings`；
-- 推荐只保留系统用户；
-- 第一条、第二条评分都会重新计算当前用户推荐；
-- 已评分电影过滤；
-- 模型版本变化和因子缓存刷新；
-- 缺失因子时回退批量推荐；
-- 模型生命周期 SQL 契约；
-- MySQL `rank` 保留字和启动入口契约。
+- 用户 ID 命名空间隔离：系统用户 ID 必须为正整数，MovieLens 用户 ID 取负后落在 `[-162541, -1]`，不与系统用户冲突（`tests/test_user_id_namespace.py`）；
+- ALS 输入只读 `user_ratings`、不读 legacy `ratings`，且 MovieLens 与系统用户评分都会被合并（`tests/test_training_contract.py`）；
+- 评分表契约：ORM 模型指向 `user_ratings`、类名为 `UserRating`、后端各模块不再导入旧 `Rating`（`tests/test_rating_table_contract.py`）；
+- 推荐结果只保留 `users` 表中的系统用户（`tests/test_training_contract.py`）；
+- 第一条、第二条评分都会基于该用户全部历史评分重新计算用户向量（`tests/test_online_recommender.py`、`tests/test_recommendation_service.py`）；
+- 已评分电影不进入推荐列表；非负约束下解向量不含负因子（`tests/test_online_recommender.py`）；
+- 模型版本变化时刷新因子缓存；因子缺失或用户无评分时回退批量推荐（`tests/test_recommendation_service.py`）；
+- 模型生命周期 SQL 契约：激活新模型前先退役旧 active，训练失败只清理 `building` 版本（`tests/test_model_lifecycle.py`）；
+- MySQL `rank` 保留字转义（`tests/test_sql_schema_contract.py`）与 Windows 启动入口契约（`tests/test_startup_contract.py`）。
+
+> 这些测试依赖 numpy，请使用已装好依赖的解释器运行（例如 `backend/venv/Scripts/python.exe -m unittest discover -s tests -v`），否则在线推荐相关的用例会因导入失败而报错。
 
 当前缺少或尚未在本地完成的验证：
 
@@ -411,12 +492,17 @@ git diff --check
 
 本次审查确认身份边界和两阶段推荐主流程已经落地，但以下问题仍应在正式部署前处理：
 
-1. **预处理刷新流程不安全**：`preprocess.py` 的 JDBC `overwrite` 与电影表外键存在冲突，应改成 staging/upsert。
+0. **评分表分裂（已于 2026-09-14 修复）**：应用此前把评分写入 legacy `ratings`，而训练读 `user_ratings`，导致前端评分永远进不了训练集。已通过迁移 `005` 合并数据、`models.py` 改用 `UserRating`（`user_ratings` 表）修复，并由 `tests/test_rating_table_contract.py` 与 `tests/test_training_contract.py` 两端契约锁定。
+
+1. **预处理刷新流程不安全**：`preprocess.py` 的 JDBC `overwrite` 会清空 `movies`，与 `movie_comments.movie_id → movies.movie_id` 外键冲突，且会抹掉海报、简介等扩展元数据，应改成 staging/upsert（详见 7.3）。
 2. **Linux 联合启动脚本路径过时**：`scripts/start_dev.sh` 检查的是项目根目录下的 `venv`，而项目实际约定的是 `backend/venv`。
-3. **JWT 有效期未显式配置**：代码与旧 README 的“7 天”描述不一致，应在配置中明确设置并同步文档。
+3. **JWT 有效期未显式配置**：代码与旧 README 的“7 天”描述不一致，应在配置中明确设置并同步文档。另：实测签发 token 时 PyJWT 会告警 HMAC 密钥仅 27 字节，短于 SHA256 建议的 32 字节（RFC 7518 §3.2），正式部署前应更换为足够长的随机密钥。
 4. **端到端测试不足**：当前测试主要是纯函数和代码契约测试，不能替代真实 Spark、MySQL 和浏览器验证。
-5. **伴随文档存在历史描述**：`AGENTS.md`、`CLAUDE.md` 和 `arch_diagram.html` 中仍有旧的 `ratings` 双用途描述，维护时应同步更新。
-6. **前端存在重复未使用模块**：`frontend/src/api/client.js`、`frontend/src/stores/user.js` 和 `frontend/src/views/MoviesView.vue` 当前不在主路由调用链中，后续应清理或明确其用途。
+5. **伴随文档已同步（2026-09-14）**：`AGENTS.md` 的目录结构、数据库表说明、评分链路与常用命令已按代码重写；`arch_diagram.html` 的「ratings 双用途」卡片、bcrypt 描述、以及不自洽的统计数字已修正；`CLAUDE.md` 早已收敛为指向 `AGENTS.md` 的指针，不再重复维护正文。
+6. **前端重复未使用模块已清理（2026-09-16）**：`api/client.js` 已并入 `api/index.js`（全站单一 axios 实例，错误 toast 统一由拦截器弹出）；`stores/user.js`、`views/MoviesView.vue` 与后端死接口 `GET /api/profile/ratings` 已删除。
+7. **迁移脚本插入的默认 admin 账号曾无法登录（已于 2026-09-14 修复）**：`sql/migrations/001_add_user_role.sql` 原先写入 bcrypt 哈希（`$2b$12$...`），而 `backend/app/models.py` 用 `werkzeug.security.check_password_hash` 校验，且已安装的 werkzeug 3.0.3 早就移除了 bcrypt 支持，会抛 `ValueError: Invalid hash method ''`；`routes/auth.py` 的 `login()` 未捕获该异常，登录返回 500 而非 401。已把脚本里的哈希换成 `generate_password_hash` 生成的 scrypt 哈希（默认参数），并在活库补上 `admin` 账号（密码 `admin123`，首次部署后应立即修改）。端到端验证：`POST /api/auth/login` 用 `admin/admin123` 返回 200 并下发 token，错误密码返回 401。
+8. **`schema.sql` 曾有三张表无法创建（已于 2026-09-14 修复）**：`user_ratings`、`model_item_factors`、`movie_comments` 原本写成 `CONSTRAINT ... FOREIGN KEY ... ON DELETE CASCADE COMMENT '...'`，而 MySQL 8.0 不允许在外键子句后接 `COMMENT`，会报 `1064`，导致全新库执行 `schema.sql` 时这三张表建不出来。已改为普通 SQL 注释，并同步修掉 `sql/migrations/002_create_movie_comments_table.sql` 里同样的两处；实测当时 8 张表全部可从零建出（`schema.sql` 现为 9 张，新增的 `movie_rating_stats` 沿用同一写法，见 6.1）。
+9. **活库与 `schema.sql` 的列漂移已消除（2026-09-14）**：活库 `movies` 曾多出 `poster_w185`、`poster_w342`、`poster_w780`、`poster_original` 四列（`varchar(500)`，TMDB 图片尺寸变体，早期“一部电影存 4 种尺寸海报”设计的残留）。它们不在 `schema.sql`、不在任何迁移脚本、全项目代码零引用，且实测 87,585 行中这四列 100% 全为 NULL——从未写入过任何值。已用 `ALTER TABLE movies DROP COLUMN` 删除，活库现为 15 列，与 `schema.sql` 一致。
 
 ## 13. 安全与运维注意事项
 

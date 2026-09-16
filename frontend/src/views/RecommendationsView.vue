@@ -31,9 +31,7 @@ onMounted(async () => {
   try {
     const data = await apiRecommendations.get()
     recs.value = data.data || []
-  } catch (msg) {
-    ElMessage.error(typeof msg === 'string' ? msg : '加载推荐失败')
-  } finally {
+  } catch {} finally {
     loading.value = false
   }
 })
@@ -42,5 +40,5 @@ onMounted(async () => {
 <style scoped>
 .page       { max-width: 1200px; margin: 0 auto; padding: 20px; }
 .page-title { margin: 0 0 4px; }
-.page-sub   { color: #888; margin: 0 0 20px; font-size: 14px; }
+.page-sub   { color: var(--app-text-muted); margin: 0 0 20px; font-size: 14px; }
 </style>

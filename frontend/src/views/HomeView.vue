@@ -98,9 +98,7 @@ async function fetchMovies() {
     total.value  = data.total
     // 同步状态到 URL
     syncStateToQuery()
-  } catch (msg) {
-    ElMessage.error(typeof msg === 'string' ? msg : '加载失败')
-  } finally {
+  } catch {} finally {
     loading.value = false
   }
 }

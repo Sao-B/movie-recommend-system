@@ -7,7 +7,7 @@ import unittest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "backend"))
 
-from recommendation_service import OnlineRecommendationService  # noqa: E402
+from app.recommendation_service import OnlineRecommendationService  # noqa: E402
 
 
 class FakeModel:
@@ -104,6 +104,33 @@ class RecommendationServiceTests(unittest.TestCase):
         result = self.service.get_for_user(2)
 
         self.assertEqual(result[0]["movie"]["movie_id"], 999)
+
+    def test_empty_batch_falls_back_to_popular_movies(self):
+        class EmptyBatchRepository(FakeRepository):
+            def __init__(self):
+                super().__init__()
+                self.popular_limit = None
+
+            def get_batch_recommendations(self, user_id, version):
+                return []
+
+            def get_popular_movies(self, limit, min_rating_count=50):
+                self.popular_limit = limit
+
+                class PopularMovie:
+                    def to_dict(self):
+                        return {"movie_id": 555, "avg_rating": 4.31}
+
+                return [PopularMovie()]
+
+        repo = EmptyBatchRepository()
+        result = OnlineRecommendationService(repo, top_n=3).get_for_user(2)
+
+        self.assertEqual(repo.popular_limit, 3)
+        self.assertEqual(
+            result,
+            [{"rank": 1, "predicted_rating": 4.31, "movie": {"movie_id": 555, "avg_rating": 4.31}}],
+        )
 
 
 if __name__ == "__main__":

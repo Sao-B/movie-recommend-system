@@ -15,15 +15,19 @@ USE movie_recommend;
 -- ============================================================
 -- 表 1: users - 系统注册用户
 -- ============================================================
--- 作用：存储通过前端注册的应用用户，支持登录认证
+-- 作用：存储通过前端注册的应用用户，支持登录认证与管理后台权限控制
 --
 -- 设计要点：
 --   - id 为自增正整数，范围 [1, ∞)
 --   - 与 MovieLens 用户隔离：MovieLens 用户 ID 在训练时取负，成为负整数
---   - 密码使用 bcrypt 加密存储
+--   - 密码用 werkzeug.security.generate_password_hash 存储，校验用 check_password_hash
+--     （werkzeug 3.x 的默认算法是 scrypt，已移除 bcrypt 支持）
+--     注意：migrations/001_add_user_role.sql 插入的默认 admin 哈希必须由
+--     generate_password_hash 生成；若写成 bcrypt 会抛 ValueError、登录返回 500
 --
 -- 关联表：
---   - user_ratings.user_id 外键引用 users.id
+--   - user_ratings.user_id 外键引用 users.id（ON DELETE CASCADE）
+--   - movie_comments.user_id 外键引用 users.id（ON DELETE CASCADE）
 --   - recommendations.user_id 对应 users.id（无外键约束，因批量导入性能考虑）
 --
 -- 查询场景：
@@ -33,7 +37,9 @@ USE movie_recommend;
 CREATE TABLE IF NOT EXISTS users (
   id           INT          NOT NULL AUTO_INCREMENT COMMENT '用户主键，自增正整数',
   username     VARCHAR(50)  NOT NULL UNIQUE         COMMENT '用户名，唯一',
-  password_hash VARCHAR(255) NOT NULL                COMMENT 'bcrypt 哈希密码',
+  password_hash VARCHAR(255) NOT NULL                COMMENT '密码哈希（werkzeug generate_password_hash / pbkdf2）',
+  avatar_url   VARCHAR(500)          NULL            COMMENT '用户头像 URL（migrations/004 新增）',
+  bio          TEXT                  NULL            COMMENT '个人签名/简介（migrations/004 新增）',
   created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '注册时间',
   role         ENUM('user', 'admin') NOT NULL DEFAULT 'user' COMMENT '用户角色：user=普通用户, admin=管理员',
   PRIMARY KEY (id),
@@ -53,13 +59,20 @@ CREATE TABLE IF NOT EXISTS users (
 --   - year 从 title 正则提取，便于按年份筛选
 --
 -- 数据来源：
---   - Spark 脚本 preprocess.py 从 HDFS 读取 movies.csv 并清洗后写入
---   - 约 86,000 条记录
+--   - Spark 脚本 preprocess.py 从 HDFS 读取 movies.csv，清洗后写入基础四列
+--     （movie_id / title / genres / year）
+--   - import_movie_stats.py、sync_movie_stats.py 回填 avg_rating、rating_count
+--   - fetch_posters.py 按 TMDB API 回填 poster_url、overview、director、writers 等富化列
+--   - 当前约 87,585 条记录
 --
--- 关联表：
---   - user_ratings.movie_id 引用 movies.movie_id
---   - recommendations.movie_id 引用 movies.movie_id
---   - model_item_factors.movie_id 引用 movies.movie_id
+-- 关联表（外键约束）：
+--   - movie_comments.movie_id 外键引用 movies.movie_id（ON DELETE CASCADE）
+--   - movie_rating_stats.movie_id 外键引用 movies.movie_id（ON DELETE CASCADE）
+-- 仅按 ID 关联、没有外键约束：
+--   - user_ratings.movie_id、model_item_factors.movie_id、recommendations.movie_id
+--     （批量导入与查询性能考虑，不建外键，需由写入方保证 ID 有效）
+-- 注意：preprocess.py 的 JDBC overwrite 会 TRUNCATE 本表，只要上面两条外键
+--       存在就会失败（与引用表有无数据无关），详见 README 第 7.3 节。
 --
 -- 查询场景：
 --   - 前端电影列表展示（支持标题、类型、年份筛选）
@@ -98,7 +111,11 @@ CREATE TABLE IF NOT EXISTS movies (
 --   - 保留此表是为了数据兼容性，可在确认无需后删除
 --
 -- 注意：
---   - 新代码不应操作此表
+--   - 新代码不应操作此表，评分的唯一事实来源是 user_ratings
+--   - 历史数据已由 migrations/005_merge_ratings_into_user_ratings.sql 合并进 user_ratings
+--   - 下面的 DDL 声明了 fk_ratings_movie → movies.movie_id。现有数据库中该表实际
+--     没有任何外键（建表时未带约束），但按本 DDL 全新建库后，这条外键会让
+--     preprocess.py 的 TRUNCATE movies 一并失败，详见 README 第 7.3 节
 --   - 如需清理，可执行 DROP TABLE ratings;
 -- ============================================================
 CREATE TABLE IF NOT EXISTS ratings (
@@ -152,8 +169,9 @@ CREATE TABLE IF NOT EXISTS user_ratings (
   UNIQUE KEY uk_user_movie (user_id, movie_id) COMMENT '同一用户对同一电影只能评分一次',
   INDEX idx_user   (user_id)  COMMENT '按用户查询评分历史',
   INDEX idx_movie  (movie_id) COMMENT '按电影查询评分统计',
+  -- 用户删除时级联删除其评分（注：MySQL 不支持在 FOREIGN KEY 子句后写 COMMENT，故用普通注释）
   CONSTRAINT fk_user_ratings_user FOREIGN KEY (user_id) REFERENCES users(id)
-    ON DELETE CASCADE COMMENT '用户删除时级联删除其评分'
+    ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='系统注册用户评分表';
 
 -- ============================================================
@@ -242,9 +260,10 @@ CREATE TABLE IF NOT EXISTS model_item_factors (
   generated_at  TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '因子生成时间',
   PRIMARY KEY (model_version, movie_id),
   INDEX idx_factor_version (model_version) COMMENT '按模型版本查询所有电影因子',
+  -- 模型删除时级联删除其电影因子（FK 子句后不能写 COMMENT）
   CONSTRAINT fk_item_factors_version FOREIGN KEY (model_version)
     REFERENCES model_versions(version)
-    ON DELETE CASCADE COMMENT '模型删除时级联删除其电影因子'
+    ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ALS 电影隐因子表（供在线推荐使用）';
 
 -- ============================================================
@@ -299,18 +318,28 @@ CREATE TABLE IF NOT EXISTS recommendations (
 -- 作用：存储用户对电影的文字评论
 --
 -- 设计要点：
---   - 用户可以对每部电影发表多条评论
+--   - **同一用户对同一电影只保留一条影评**：再次发表即更新正文，不追加新行
+--     （与 user_ratings 的「一人一片一条」一致，避免反复点按钮堆出重复评论）。
+--     该规则由应用层保证（backend/app/routes/comments.py），表上没有唯一索引。
 --   - created_at 建立索引以支持按时间倒序查询
---   - 支持软删除（通过删除记录实现）
+--   - edited_at 只在用户真正改过正文时写入。**不要用 updated_at 判断「是否编辑过」**：
+--     那一列在插入时就会被写成发表时刻，用它做判据会把所有影评都显示成已修改。
+--   - 删除为物理删除（DELETE /api/comments/<id>），没有软删除标记
+--   - **可见性不存字段**：一条影评是否公开展示，取决于作者此刻有没有给这部电影
+--     打分（user_ratings 里有没有对应那一行）。作者没有评分行时（例如在个人中心
+--     「我的评分」里删掉了），他的影评随之「仅自己可见」；重新评分（>= 0.5）后
+--     自动重新公开。
+--     从评分推导可见性是单一事实来源，不会出现两份状态互相打架。
 --
 -- 数据流向：
---   - 写入：前端用户提交评论 → Flask API → movie_comments
---   - 读取：前端查询电影详情页的评论列表（分页）
+--   - 写入：前端用户提交影评 → Flask API（POST 发表/更新、PUT 编辑）→ movie_comments
+--   - 读取：前端查询电影详情页的影评列表（分页；另单独取当前用户那条用于置顶展示）
 --
 -- 查询场景：
---   - 按电影 ID 分页查询评论列表
---   - 用户删除自己的评论
---   - 关联查询用户对该电影的评分（显示星级）
+--   - 按电影 ID 分页查询影评列表（LEFT JOIN user_ratings 过滤出公开的影评）
+--   - 取当前用户在该电影下的影评（置顶卡片 + 编辑）
+--   - 用户编辑或删除自己的影评
+--   - 关联查询作者对该电影的评分（显示星级）
 -- ============================================================
 CREATE TABLE IF NOT EXISTS movie_comments (
   id          BIGINT    NOT NULL AUTO_INCREMENT COMMENT '评论主键',
@@ -318,12 +347,52 @@ CREATE TABLE IF NOT EXISTS movie_comments (
   movie_id    INT       NOT NULL COMMENT '电影 ID，对应 movies.movie_id',
   content     TEXT      NOT NULL COMMENT '评论内容',
   created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '发表时间',
-  updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '行最后写入时间（插入时即等于发表时间，别用它判断是否编辑过）',
+  edited_at   TIMESTAMP NULL     DEFAULT NULL COMMENT '用户手动编辑正文的时间；从未编辑过为 NULL（migrations/007 新增）',
   PRIMARY KEY (id),
   INDEX idx_movie_created (movie_id, created_at DESC) COMMENT '按电影查询评论，按时间倒序',
   INDEX idx_user (user_id) COMMENT '按用户查询评论',
+  -- 用户删除时级联删除其评论（FK 子句后不能写 COMMENT）
   CONSTRAINT fk_comments_user FOREIGN KEY (user_id) REFERENCES users(id)
-    ON DELETE CASCADE COMMENT '用户删除时级联删除其评论',
+    ON DELETE CASCADE,
+  -- 电影删除时级联删除其评论
   CONSTRAINT fk_comments_movie FOREIGN KEY (movie_id) REFERENCES movies(movie_id)
-    ON DELETE CASCADE COMMENT '电影删除时级联删除其评论'
+    ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='电影评论表';
+
+-- ============================================================
+-- 表 9: movie_rating_stats - MovieLens 评分五档分布（离线聚合）
+-- ============================================================
+-- 作用：存放 MovieLens 全量评分的五档分布，供详情页「评分统计」渲染分布柱
+--
+-- 为什么需要：
+--   - movies 表只有 avg_rating / rating_count 两个标量，没有分档计数
+--   - 详情页要显示 5/4/3/2/1 星各占多少，必须另有分档数据
+--
+-- 数据来源：
+--   - scripts/build_ml_rating_stats.py 流式聚合 data/raw/ratings.csv（3200 万条）
+--     一次性写入，不需随 ALS 训练重算；档位规则与 backend/rating_stats.py 的
+--     rating_to_star_bucket 完全一致（四舍五入，4.5 归 5 档）
+--   - 当前约 84,432 行（= MovieLens 中有评分的电影数）
+--
+-- 数据使用：
+--   - GET /api/movies/<id>/rating-stats 把本表与 user_ratings 合并后返回，
+--     页面上不区分来源
+--   - rating_sum 用于与本站评分一起做精确加权平均（avg_rating 只有 2 位小数）
+--
+-- 注意：本表依赖 movies 行存在（有外键）。重载 movies 后必须重跑
+--       build_ml_rating_stats.py 重建本表。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS movie_rating_stats (
+  movie_id     INT           NOT NULL COMMENT '电影 ID，对应 movies.movie_id',
+  rating_count INT           NOT NULL COMMENT 'MovieLens 评分总条数',
+  rating_sum   DECIMAL(14,1) NOT NULL COMMENT 'MovieLens 评分总和（0.5 粒度，1 位小数即精确）',
+  cnt_1        INT           NOT NULL DEFAULT 0 COMMENT '1 星档条数',
+  cnt_2        INT           NOT NULL DEFAULT 0 COMMENT '2 星档条数',
+  cnt_3        INT           NOT NULL DEFAULT 0 COMMENT '3 星档条数',
+  cnt_4        INT           NOT NULL DEFAULT 0 COMMENT '4 星档条数',
+  cnt_5        INT           NOT NULL DEFAULT 0 COMMENT '5 星档条数',
+  PRIMARY KEY (movie_id),
+  CONSTRAINT fk_mrs_movie FOREIGN KEY (movie_id) REFERENCES movies(movie_id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='MovieLens 评分五档分布（离线聚合，与本站评分合并展示）';

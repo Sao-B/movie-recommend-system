@@ -14,7 +14,7 @@ export default defineConfig({
     // 开发环境代理：前端请求 /api/* 自动转发到 Flask
     proxy: {
       '/api': {
-        target: 'http://localhost:5000',
+        target: 'http://localhost:8000',
         changeOrigin: true
       }
     }

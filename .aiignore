@@ -13,9 +13,6 @@
 # 修改规则只需改这里，不要在别处重复维护。
 
 # ── 1. 巨型日志与生成物（最高优先级：体积大，最容易一次性吃满上下文）──
-poster_fetch_full.log          # 5.8 MB — 头号雷区，严禁整体读取
-poster_fetch.log               # 123 KB
-poster_fetch_progress.txt      # 抓取进度快照，非源码
 *.log
 logs/
 

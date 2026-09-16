@@ -26,13 +26,13 @@ als:
   cold_start_strategy: drop
   train_ratio: 0.8
   top_n: 20
-  # MovieLens user_id 与系统用户 id 之间的偏移量，避免两者冲突
-  ml_user_offset: 10000000
 
 # Flask
+# 注意：port 必须与 frontend/vite.config.js 的 proxy target 保持一致。
+# 本机（Windows）禁止绑定 5000/5001，因此统一使用 8000。
 flask:
   host: "127.0.0.1"
-  port: 5000
+  port: 8000
   debug: false
   secret_key: "replace_with_a_random_secret"
 

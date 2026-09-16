@@ -11,11 +11,13 @@ LOG_DIR="${PROJECT_ROOT}/logs"
 # 创建日志目录
 mkdir -p "${LOG_DIR}"
 
-echo "==> 启动 Flask 后端 (http://localhost:5000)..."
+echo "==> 启动 Flask 后端 (http://localhost:8000)..."
 cd "${PROJECT_ROOT}/backend"
-# 优先使用虚拟环境中的 Python，日志重定向到独立文件
-if [ -f "../venv/bin/python" ]; then
-    ../venv/bin/python app.py > "${LOG_DIR}/flask.log" 2>&1 &
+# 优先使用 backend/venv 中的 Python（兼容 Linux bin/ 与 Windows Scripts/），日志重定向到独立文件
+if [ -f "venv/bin/python" ]; then
+    venv/bin/python app.py > "${LOG_DIR}/flask.log" 2>&1 &
+elif [ -f "venv/Scripts/python.exe" ]; then
+    venv/Scripts/python.exe app.py > "${LOG_DIR}/flask.log" 2>&1 &
 else
     python app.py > "${LOG_DIR}/flask.log" 2>&1 &
 fi

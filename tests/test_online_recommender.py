@@ -8,7 +8,10 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "backend"))
 
-from recommendation_core import (  # noqa: E402
+from app.recommendation_core import (  # noqa: E402
+    RATING_MAX,
+    RATING_MIN,
+    clamp_rating,
     rank_unrated_items,
     solve_user_vector,
 )
@@ -58,6 +61,11 @@ class OnlineRecommenderTests(unittest.TestCase):
             nonnegative=True,
         )
         self.assertTrue(np.all(user_vector >= -1e-9))
+
+    def test_clamp_rating_keeps_online_scores_on_rating_scale(self):
+        self.assertEqual(clamp_rating(0.2), RATING_MIN)
+        self.assertEqual(clamp_rating(9.68), RATING_MAX)
+        self.assertEqual(clamp_rating(4.2), 4.2)
 
 
 if __name__ == "__main__":

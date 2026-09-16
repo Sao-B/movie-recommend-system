@@ -1,0 +1,50 @@
+/* 全站配色令牌：日间为默认值，夜间由 <html class="dark"> 覆盖。
+   组件里不要再写死颜色，统一用这里的变量，否则切换主题时会一半变一半不变。 */
+
+:root {
+  --app-bg-page: #f5f7fa;
+  --app-bg-surface: #ffffff;
+  --app-fill: #f5f7fa;
+  --app-fill-light: #fafafa;
+  --app-border: #e4e7ed;
+  --app-border-light: #dcdfe6;
+  --app-text: #303133;
+  --app-text-secondary: #606266;
+  --app-text-muted: #909399;
+  --app-pin-bg: #fffbf2;
+  --app-pin-border: #f3d19e;
+}
+
+html.dark {
+  --app-bg-page: #141414;
+  --app-bg-surface: #1d1e1f;
+  --app-fill: #262727;
+  --app-fill-light: #202121;
+  --app-border: #3f4143;
+  --app-border-light: #4c4d4f;
+  --app-text: #e5eaf3;
+  --app-text-secondary: #cfd3dc;
+  --app-text-muted: #a3a6ad;
+  --app-pin-bg: #322a18;
+  --app-pin-border: #5c4a22;
+}
+
+body {
+  background: var(--app-bg-page);
+  color: var(--app-text);
+  transition: background-color 0.2s, color 0.2s;
+}
+
+/* Element Plus 暗色下部分容器背景不会自动跟随，这里统一兜底 */
+html.dark .el-card,
+html.dark .el-input__wrapper,
+html.dark .el-textarea__inner,
+html.dark .el-select__wrapper,
+html.dark .el-dropdown-menu,
+html.dark .el-picker__popper {
+  background-color: var(--app-bg-surface);
+}
+
+html.dark img {
+  filter: brightness(0.9);
+}
