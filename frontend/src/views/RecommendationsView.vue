@@ -20,7 +20,6 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
 import MovieCard from '@/components/MovieCard.vue'
 import { apiRecommendations } from '@/api/recommendations'
 

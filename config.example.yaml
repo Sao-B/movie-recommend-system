@@ -36,6 +36,12 @@ flask:
   debug: false
   secret_key: "replace_with_a_random_secret"
 
+# JWT
+# access token 有效期（小时），不配置时后端默认 168 小时 = 7 天。
+# 正式部署建议缩短（如 24），并配合前端 401 拦截重新登录。
+jwt:
+  access_token_expires_hours: 168
+
 # CORS
 cors:
   origins:

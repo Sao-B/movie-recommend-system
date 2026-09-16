@@ -50,7 +50,6 @@
 <script setup>
 import { ref, reactive, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
 import MovieCard from '@/components/MovieCard.vue'
 import { apiMovies } from '@/api/movies'
 
@@ -118,7 +117,7 @@ onMounted(() => {
 })
 
 // 监听 URL 变化（浏览器前进/后退）
-watch(() => route.query, (newQuery) => {
+watch(() => route.query, () => {
   restoreStateFromQuery()
   fetchMovies()
 }, { deep: true })

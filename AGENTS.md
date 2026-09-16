@@ -53,7 +53,7 @@ Project/
 │       └── user_id_namespace.py   # 用户 ID 命名空间校验（取负方案）
 │
 ├── sql/
-│   ├── schema.sql         # 全新数据库完整建表 DDL（9 张表）
+│   ├── schema.sql         # 全新数据库完整建表 DDL（8 张表）
 │   └── migrations/        # 已有数据库的增量迁移
 │
 ├── backend/               # Flask API
@@ -131,7 +131,7 @@ Project/
 
 ## 数据库表结构
 
-共 9 张表（完整 DDL 见 `sql/schema.sql`，增量迁移见 `sql/migrations/`）：
+共 8 张表（完整 DDL 见 `sql/schema.sql`，增量迁移见 `sql/migrations/`）：
 
 ```
 users             — 系统用户（id, username, password_hash, avatar_url, bio, created_at, role）
@@ -142,7 +142,6 @@ movie_comments    — 电影评论（user_id, movie_id, content, created_at, upd
 model_versions    — ALS 模型版本（version, rank, reg_param, status, generated_at, activated_at）
 model_item_factors— 电影隐因子（model_version, movie_id, factors, generated_at）
 recommendations   — 离线批量推荐（model_version, user_id, movie_id, predicted_rating, rank）
-ratings           — 遗留评分表，只读保留，任何代码都不应读写
 ```
 
 > `movie_rating_stats` 是**离线聚合的派生表**，由 `scripts/build_ml_rating_stats.py`
@@ -150,7 +149,8 @@ ratings           — 遗留评分表，只读保留，任何代码都不应读�
 > `user_ratings` 合并后展示，页面上不区分来源。重载 `movies` 后需重跑该脚本。
 
 > 2026-09-14 起评分表统一到 `user_ratings`：应用写入、Spark 训练、在线推荐都只读写这一张表。
-> `ratings` 仅作历史数据保留（`migrations/005` 已把数据合并过去），由 `tests/test_rating_table_contract.py`
+> legacy `ratings` 的数据由 `migrations/005` 合并进 `user_ratings`，表本身已由
+> `migrations/008_drop_legacy_ratings.sql` 删除（2026-09-16）；由 `tests/test_rating_table_contract.py`
 > 与 `tests/test_training_contract.py` 两端契约锁定，不要再把应用评分写进 `ratings`。
 >
 > MovieLens 原始评分不存在 MySQL 里，它在 HDFS 的 `ratings.csv`，训练时读取并将 `userId` 取负。
@@ -225,7 +225,7 @@ npm run build --prefix frontend
 - Spark 作业通过 JDBC 把电影因子与批量推荐写入 MySQL；Flask 主路径是在线实时求解，因子缺失或用户无评分时才降级读 `recommendations`。
 - 前端评分写入 `user_ratings`：下一个推荐请求即触发该用户的在线计算；只有重新训练后，新评分才会进入全局模型并影响其他用户。
 - 集群需要本机配置 SSH 免密登录（`ssh-keygen` + `authorized_keys`）。
-- 不要把 `spark/preprocess.py` 当作可重复的刷新流程：它的 JDBC `overwrite` 会先清空 `movies`，既会撞上 `movie_comments` 的外键，也会抹掉评分统计与 TMDB 富化列（详见 README 第 7.3 节）。
+- `spark/preprocess.py` 自 2026-09-16 起走 staging/upsert（`movies_staging` 暂存 + `ON DUPLICATE KEY UPDATE`），可重复执行，不会清空评分统计与 TMDB 富化列（详见 README 第 7.3 节）。
 - `config.yaml` 按忽略清单不读取；需要了解配置项时看 `config.example.yaml`。
 
 ---

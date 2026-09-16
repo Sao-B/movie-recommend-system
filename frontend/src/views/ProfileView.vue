@@ -206,7 +206,6 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { Loading } from '@element-plus/icons-vue'
 import { getUserInfo, updateUserInfo, getUserStats, getUserComments } from '@/api/profile'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiComments } from '@/api/comments'

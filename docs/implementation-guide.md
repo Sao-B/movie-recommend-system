@@ -510,7 +510,7 @@ node -v && npm -v
 | `ratings` | 遗留表，只读保留 | 历史数据，2026-09-14 起不再被任何代码读写 |
 | MovieLens CSV（HDFS） | MovieLens 原始评分 | 离线训练读取 |
 
-> **历史说明**：项目早期应用层误写 legacy `ratings` 表，导致"前端评分进不了训练集"的数据分裂。已通过迁移 `sql/migrations/005_merge_ratings_into_user_ratings.sql` 合并数据，`backend/app/models.py` 的评分模型（`UserRating`）统一指向 `user_ratings`，并由两端契约测试（`tests/test_training_contract.py` 锁训练侧、`tests/test_rating_table_contract.py` 锁应用侧）防止再次分裂。
+> **历史说明**：项目早期应用层误写 legacy `ratings` 表，导致"前端评分进不了训练集"的数据分裂。已通过迁移 `sql/migrations/005_merge_ratings_into_user_ratings.sql` 合并数据，`backend/app/models.py` 的评分模型（`UserRating`）统一指向 `user_ratings`，并由两端契约测试（`tests/test_training_contract.py` 锁训练侧、`tests/test_rating_table_contract.py` 锁应用侧）防止再次分裂。legacy 表本身已于 2026-09-16 删除（迁移 `008_drop_legacy_ratings.sql`）。
 
 **为什么 MovieLens 评分不进 MySQL？**
 - MovieLens 数据量大（3300 万条），留在 HDFS 由 Spark 直接读取
@@ -590,8 +590,10 @@ CREATE TABLE movies (
 
 **数据来源（三层）：**
 1. `spark/preprocess.py`：从 HDFS 清洗 `movies.csv` 写入（约 8.7 万部）
-2. `import_movie_stats.py` / `sync_movie_stats.py`：从 MovieLens 统计 CSV / 虚拟机同步 `avg_rating`、`rating_count`
-3. `fetch_posters.py`：按 TMDB API 逐一回填海报、简介、导演、主演等富化列
+2. `scripts/import_movie_stats.py` / 根目录 `sync_movie_stats.py`：从 MovieLens 统计 CSV / 虚拟机同步 `avg_rating`、`rating_count`
+3. 根目录 `fetch_posters.py`：按 TMDB API 逐一回填海报、简介、导演、主演等富化列
+
+> 凭据统一经根目录 `config_loader.py` 从 `config.yaml` 读取（`tmdb:` / `vm:` 段），脚本不含敏感信息。
 
 **查询场景：**
 1. 前端电影列表（按热门度排序，过滤评分人数 < 100 的小样本）：
@@ -608,15 +610,12 @@ CREATE TABLE movies (
 
 ---
 
-#### 3.2.3 `ratings` - 遗留评分表（只读保留）
+#### 3.2.3 `ratings` - 遗留评分表（已删除）
 
-**作用：** 保留历史评分数据，**2026-09-14 起不再被应用或训练任务读写**。
-
-**处理记录：**
+**历史记录：**
 1. 应用评分曾误写此表（详见 3.1.2 历史说明）
 2. 数据已通过迁移 005 合并进 `user_ratings`
-3. 测试期间产生的系统用户测试数据已清空；表结构保留仅为兼容
-4. 如确认无需保留，可执行 `DROP TABLE ratings;`
+3. 2026-09-16 起表已删除（`sql/migrations/008_drop_legacy_ratings.sql`），并从 `schema.sql` 移除；全新建库不再产生该表
 
 ---
 
@@ -706,10 +705,13 @@ CREATE TABLE model_versions (
 ```sql
 -- 在线推荐获取当前活跃模型
 SELECT * FROM model_versions WHERE status = 'active' LIMIT 1;
--- 运维清理 30 天前的旧模型（先删 recommendations 再删版本）
-DELETE FROM recommendations WHERE model_version IN
-  (SELECT version FROM model_versions WHERE status='retired'
-   AND generated_at < DATE_SUB(NOW(), INTERVAL 30 DAY));
+```
+
+**旧模型清理（已自动化）：** `train_als.py` 在 `activate_model_version()` 成功后调用 `cleanup_stale_model_data()`（`spark/utils/mysql_utils.py`），把 `recommendations`、`model_item_factors` 中不属于新 active 版本的行全部删除，失败只告警不回滚训练。`model_versions` 的历史行会保留作审计记录；如需连版本行一起清，可手工执行：
+
+```sql
+DELETE FROM model_versions WHERE status='retired'
+  AND generated_at < DATE_SUB(NOW(), INTERVAL 30 DAY);
 ```
 
 ---
@@ -855,13 +857,13 @@ CREATE TABLE movie_rating_stats (
 );
 ```
 
-**数据来源**：`scripts/build_ml_rating_stats.py` 流式聚合 `data/raw/ratings.csv`（3200 万条）一次性写入，约 84,432 行，**不随 ALS 训练变化**。档位规则直接复用 `backend/rating_stats.py` 的 `rating_to_star_bucket`，保证与本站评分同一口径（4.5 归 5 档）。重载 `movies` 后必须重跑该脚本。
+**数据来源**：`scripts/build_ml_rating_stats.py` 流式聚合 `data/raw/ratings.csv`（3200 万条）一次性写入，约 84,432 行，**不随 ALS 训练变化**。档位规则直接复用 `backend/app/rating_stats.py` 的 `rating_to_star_bucket`，保证与本站评分同一口径（4.5 归 5 档）。重载 `movies` 后必须重跑该脚本。
 
 **读取方**：`GET /api/movies/<id>/rating-stats` 把本表与 `user_ratings` 合并后返回，页面上不区分来源；平均分取本表的 `rating_sum`，不用 `movies.avg_rating`（后者只有 2 位小数，做加权平均精度不够）。
 
 ### 3.3 执行建表与迁移
 
-**新数据库**（一步到位，schema 已包含全部 9 张表）：
+**新数据库**（一步到位，schema 已包含全部 8 张表）：
 ```bash
 mysql -u root -p < sql/schema.sql
 ```
@@ -877,11 +879,14 @@ mysql -u root -p movie_recommend < sql/migrations/004_add_user_profile_fields.sq
 mysql -u root -p movie_recommend < sql/migrations/005_merge_ratings_into_user_ratings.sql
 mysql -u root -p movie_recommend < sql/migrations/006_add_movie_rating_stats.sql
 mysql -u root -p movie_recommend < sql/migrations/007_add_comment_edited_at.sql
+mysql -u root -p movie_recommend < sql/migrations/008_drop_legacy_ratings.sql
 ```
 
 > `006` 只建表不灌数据，建完必须跑 `scripts/build_ml_rating_stats.py`（约 40 秒），否则详情页「评分统计」里没有 MovieLens 的份，只剩本站评分。
 
 > `007` 给 `movie_comments` 加 `edited_at`（影评「上次修改于」）。漏执行会让影评接口报表列不存在——模型会 select 该列。`ADD COLUMN` 不幂等，重跑报 1060。
+
+> `008` 删除 legacy `ratings` 表（数据已由 `005` 合并）。幂等，仅存量库需要；全新建库直接跑 `schema.sql` 即可。
 
 > `003_rename_ratings_table.sql` 已废弃（方向与整体设计相反），保留仅为说明历史，不需要执行。
 
@@ -889,7 +894,7 @@ mysql -u root -p movie_recommend < sql/migrations/007_add_comment_edited_at.sql
 ```sql
 USE movie_recommend;
 SHOW TABLES;
--- 应该看到：users, movies, ratings(legacy), user_ratings, movie_rating_stats,
+-- 应该看到 8 张表：users, movies, user_ratings, movie_rating_stats,
 --           movie_comments, model_versions, model_item_factors, recommendations
 
 SELECT COUNT(*) FROM movies;
@@ -940,7 +945,9 @@ movies = (
     .na.drop(subset=["movie_id", "title"])
     .dropDuplicates(["movie_id"])
 )
-write_df_to_mysql(movies, "movies", jdbc_url, ..., mode="overwrite")
+reset_movies_staging(...)        # 先 drop 重建暂存表
+write_df_to_mysql(movies, "movies_staging", jdbc_url, ..., mode="overwrite")
+upsert_movies_from_staging(...)  # INSERT ... SELECT ... ON DUPLICATE KEY UPDATE
 ```
 
 **执行命令：**
@@ -954,12 +961,16 @@ SELECT COUNT(*) FROM movies;          -- 应接近 87000
 SELECT * FROM movies WHERE year = 1995 LIMIT 5;
 ```
 
-> **已知限制**：`mode="overwrite"` 底层是 TRUNCATE + 重写，而且只写入 `movie_id`、`title`、`genres`、`year` 四列。
+> **可重复执行（2026-09-16 起）**：写入路径已从直接 `overwrite movies` 改为 staging/upsert。
+> 背景：`overwrite` 底层是 TRUNCATE + 重写，`movie_comments.movie_id` 与
+> `movie_rating_stats.movie_id` 两条外键会直接挡住 TRUNCATE；即使绕过，也只会写入
+> `movie_id`、`title`、`genres`、`year` 四列，把 `import_movie_stats.py` /
+> `fetch_posters.py` 维护的统计与富化列全部清空。
 >
-> - **外键**：实测引用 `movies` 的外键有两条——`movie_comments.movie_id` 与 `movie_rating_stats.movie_id`（当前活库）。`user_ratings` 只对 `users.id` 建了外键，`model_item_factors`、`recommendations` 都没有指向 `movies` 的外键。MySQL 不允许 TRUNCATE 被外键引用的表，与引用表里有没有数据无关，所以只要 `movie_comments` 存在，再次执行预处理就会失败。（按 `sql/schema.sql` 的 DDL 全新建库时，legacy `ratings` 声明的 `movie_id` 与 `user_id` 两条外键会构成第三、第四条。）
-> - **元数据丢失**：即使绕过外键，`movies` 上由 `import_movie_stats.py` / `sync_movie_stats.py` 写的 `avg_rating`、`rating_count`，以及 `fetch_posters.py` 回填的海报、简介、导演等富化列都会被清空；`movie_rating_stats` 依赖 `movies` 行存在，重载后必须重跑 `scripts/build_ml_rating_stats.py` 重建。
->
-> **不要把这条命令当作可重复的生产刷新流程**，应改为 staging/upsert。
+> 现在的流程：清洗结果先写进每次重建的 `movies_staging`，再
+> `INSERT ... ON DUPLICATE KEY UPDATE` 合并进 `movies`——新电影插入，已有电影只更新
+> title/genres/year，统计列与富化列原样保留；staging 中已消失、但仍被评论/评分统计
+> 引用的电影会保留并打印 WARNING（不删除，避免外键冲突）。
 
 ### 4.3 评分统计聚合（`ratings_clean.csv`）
 
@@ -1427,7 +1438,7 @@ pip install -r requirements.txt
 python app.py     # 监听 config.yaml 的 flask.host:port
 ```
 
-> `scripts/start_dev.sh`（Linux 联合启动）检查的是项目根 `venv`，与实际约定 `backend/venv` 不符，Linux 使用前需先修正脚本内 Python 路径（README 已知问题）。
+> `scripts/start_dev.sh`（Linux 联合启动）检查的是 `backend/venv`，与后端实际使用的虚拟机位置一致。
 
 ---
 
@@ -1435,7 +1446,7 @@ python app.py     # 监听 config.yaml 的 flask.host:port
 
 ### 8.1 技术栈
 
-Vue 3.4（Composition API）、Vite 5、Element Plus 2.7 + icons、Pinia 2.1、Vue Router 4.3、Axios 1.7。依赖见 `frontend/package.json`。
+Vue 3.4（Composition API）、Vite 5、Element Plus 2.7 + icons、Pinia 2.1、Vue Router 4.3、Axios 1.7；ESLint 9（flat config + eslint-plugin-vue，`npm run lint`）负责静态检查。依赖见 `frontend/package.json`。
 
 ### 8.2 项目结构
 
@@ -1446,12 +1457,12 @@ frontend/src/
 ├── layouts/AdminLayout.vue
 ├── stores/
 │   ├── auth.js            # token + user，含 isAdmin
-│   └── user.js            # 未使用（遗留，待清理）
+│   └── theme.js           # 日间 / 夜间 / 跟随系统三档主题
 ├── api/
 │   ├── index.js           # Axios 实例：JWT 请求拦截、401 响应拦截
 │   ├── auth.js / movies.js / ratings.js / recommendations.js
 │   ├── comments.js / profile.js / admin.js
-│   └── client.js          # 未使用（遗留，待清理）
+│   └── ...
 ├── views/
 │   ├── HomeView.vue           # 电影浏览主页
 │   ├── LoginView.vue / RegisterView.vue
@@ -1741,11 +1752,14 @@ flask:
   debug: false
   secret_key: "replace_with_a_random_secret"
 
+jwt:       # access token 有效期（小时），默认 168 = 7 天
+  access_token_expires_hours: 168
+
 cors:
   origins: ["http://localhost:5173", "http://127.0.0.1:5173"]
 
-tmdb:      # fetch_posters.py 电影富化
-vm:        # sync_movie_stats.py 虚拟机统计同步（仅本地开发）
+tmdb:      # 根目录 fetch_posters.py 电影富化
+vm:        # 根目录 sync_movie_stats.py 虚拟机统计同步（仅本地开发）
 ```
 
 > 所有代码与脚本从 `config.yaml` 读配置，禁止硬编码凭据。

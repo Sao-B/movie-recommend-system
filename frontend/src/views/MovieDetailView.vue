@@ -95,7 +95,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
 import { Film } from '@element-plus/icons-vue'
 import { apiMovies } from '@/api/movies'
 import RatingStats from '@/components/RatingStats.vue'

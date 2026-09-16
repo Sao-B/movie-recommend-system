@@ -1,4 +1,6 @@
 import os
+from datetime import timedelta
+
 import yaml
 
 # 项目根目录（backend/ 的上一级）
@@ -20,6 +22,10 @@ class Config:
     # Flask / JWT
     SECRET_KEY = _flask["secret_key"]
     JWT_SECRET_KEY = _flask["secret_key"]
+    # access token 有效期（小时），默认 168h = 7 天；config.yaml 的 jwt 段可覆盖
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(
+        hours=int(_cfg.get("jwt", {}).get("access_token_expires_hours", 168))
+    )
 
     # SQLAlchemy
     SQLALCHEMY_DATABASE_URI = (

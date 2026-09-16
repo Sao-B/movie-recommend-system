@@ -59,8 +59,8 @@ CREATE TABLE IF NOT EXISTS users (
 --   - year 从 title 正则提取，便于按年份筛选
 --
 -- 数据来源：
---   - Spark 脚本 preprocess.py 从 HDFS 读取 movies.csv，清洗后写入基础四列
---     （movie_id / title / genres / year）
+--   - Spark 脚本 preprocess.py 从 HDFS 读取 movies.csv，清洗后经 movies_staging
+--     暂存、upsert 写入基础四列（movie_id / title / genres / year），可重复执行
 --   - import_movie_stats.py、sync_movie_stats.py 回填 avg_rating、rating_count
 --   - fetch_posters.py 按 TMDB API 回填 poster_url、overview、director、writers 等富化列
 --   - 当前约 87,585 条记录
@@ -71,8 +71,8 @@ CREATE TABLE IF NOT EXISTS users (
 -- 仅按 ID 关联、没有外键约束：
 --   - user_ratings.movie_id、model_item_factors.movie_id、recommendations.movie_id
 --     （批量导入与查询性能考虑，不建外键，需由写入方保证 ID 有效）
--- 注意：preprocess.py 的 JDBC overwrite 会 TRUNCATE 本表，只要上面两条外键
---       存在就会失败（与引用表有无数据无关），详见 README 第 7.3 节。
+-- 注意：preprocess.py 不再 TRUNCATE 本表（2026-09-16 起改走 movies_staging
+--       暂存 + upsert），外键不会再挡住预处理刷新。
 --
 -- 查询场景：
 --   - 前端电影列表展示（支持标题、类型、年份筛选）
@@ -101,39 +101,7 @@ CREATE TABLE IF NOT EXISTS movies (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='电影元数据表';
 
 -- ============================================================
--- 表 3: ratings - 遗留评分表（已废弃）
--- ============================================================
--- 作用：保留历史评分数据，但不再由应用或训练任务读写
---
--- 废弃原因：
---   - 应用评分已迁移到 user_ratings 表
---   - 训练时直接从 HDFS 读取 MovieLens 评分，从 user_ratings 读取系统用户评分
---   - 保留此表是为了数据兼容性，可在确认无需后删除
---
--- 注意：
---   - 新代码不应操作此表，评分的唯一事实来源是 user_ratings
---   - 历史数据已由 migrations/005_merge_ratings_into_user_ratings.sql 合并进 user_ratings
---   - 下面的 DDL 声明了 fk_ratings_movie → movies.movie_id。现有数据库中该表实际
---     没有任何外键（建表时未带约束），但按本 DDL 全新建库后，这条外键会让
---     preprocess.py 的 TRUNCATE movies 一并失败，详见 README 第 7.3 节
---   - 如需清理，可执行 DROP TABLE ratings;
--- ============================================================
-CREATE TABLE IF NOT EXISTS ratings (
-  id        BIGINT    NOT NULL AUTO_INCREMENT,
-  user_id   INT       NOT NULL COMMENT '对应 users.id 或 MovieLens 用户 ID',
-  movie_id  INT       NOT NULL COMMENT '对应 movies.movie_id',
-  rating    FLOAT     NOT NULL COMMENT '评分值 0.5~5.0' CHECK (rating >= 0.5 AND rating <= 5.0),
-  rated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_user_movie (user_id, movie_id),
-  INDEX idx_user   (user_id),
-  INDEX idx_movie  (movie_id),
-  CONSTRAINT fk_ratings_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-  CONSTRAINT fk_ratings_movie FOREIGN KEY (movie_id) REFERENCES movies(movie_id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='遗留评分数据（已废弃，不再使用）';
-
--- ============================================================
--- 表 4: user_ratings - 系统用户评分
+-- 表 3: user_ratings - 系统用户评分
 -- ============================================================
 -- 作用：存储系统注册用户的评分记录，用于应用评分功能和 ALS 训练
 --
@@ -175,7 +143,7 @@ CREATE TABLE IF NOT EXISTS user_ratings (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='系统注册用户评分表';
 
 -- ============================================================
--- 表 5: model_versions - ALS 模型版本管理
+-- 表 4: model_versions - ALS 模型版本管理
 -- ============================================================
 -- 作用：管理 ALS 模型的生命周期，记录训练参数和状态
 --
@@ -221,7 +189,7 @@ CREATE TABLE IF NOT EXISTS model_versions (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ALS 模型版本管理表';
 
 -- ============================================================
--- 表 6: model_item_factors - ALS 电影隐因子
+-- 表 5: model_item_factors - ALS 电影隐因子
 -- ============================================================
 -- 作用：存储 ALS 训练得到的电影隐向量，供在线推荐使用
 --
@@ -267,7 +235,7 @@ CREATE TABLE IF NOT EXISTS model_item_factors (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ALS 电影隐因子表（供在线推荐使用）';
 
 -- ============================================================
--- 表 7: recommendations - 批量推荐结果
+-- 表 6: recommendations - 批量推荐结果
 -- ============================================================
 -- 作用：存储 ALS 离线训练生成的批量推荐结果
 --
@@ -313,7 +281,7 @@ CREATE TABLE IF NOT EXISTS recommendations (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ALS 批量推荐结果表';
 
 -- ============================================================
--- 表 8: movie_comments - 电影评论
+-- 表 7: movie_comments - 电影评论
 -- ============================================================
 -- 作用：存储用户对电影的文字评论
 --
@@ -361,7 +329,7 @@ CREATE TABLE IF NOT EXISTS movie_comments (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='电影评论表';
 
 -- ============================================================
--- 表 9: movie_rating_stats - MovieLens 评分五档分布（离线聚合）
+-- 表 8: movie_rating_stats - MovieLens 评分五档分布（离线聚合）
 -- ============================================================
 -- 作用：存放 MovieLens 全量评分的五档分布，供详情页「评分统计」渲染分布柱
 --
@@ -371,7 +339,7 @@ CREATE TABLE IF NOT EXISTS movie_comments (
 --
 -- 数据来源：
 --   - scripts/build_ml_rating_stats.py 流式聚合 data/raw/ratings.csv（3200 万条）
---     一次性写入，不需随 ALS 训练重算；档位规则与 backend/rating_stats.py 的
+--     一次性写入，不需随 ALS 训练重算；档位规则与 backend/app/rating_stats.py 的
 --     rating_to_star_bucket 完全一致（四舍五入，4.5 归 5 档）
 --   - 当前约 84,432 行（= MovieLens 中有评分的电影数）
 --

@@ -189,7 +189,7 @@ flask:
 mysql -u root -p < sql/schema.sql
 ```
 
-`schema.sql` 共创建 9 张表：`users`、`movies`、`ratings`（legacy 只读）、`user_ratings`、`movie_rating_stats`、`movie_comments`、`model_versions`、`model_item_factors` 和 `recommendations`。
+`schema.sql` 共创建 8 张表：`users`、`movies`、`user_ratings`、`movie_rating_stats`、`movie_comments`、`model_versions`、`model_item_factors` 和 `recommendations`。（legacy `ratings` 已由迁移 `008_drop_legacy_ratings.sql` 删除，2026-09-14 之前的存量库执行该迁移即可。）
 
 ### 6.2 已有数据库
 
@@ -219,11 +219,12 @@ mysql -u root -p movie_recommend < sql/migrations/007_add_comment_edited_at.sql
 | `005_merge_ratings_into_user_ratings.sql` | 把 legacy `ratings` 中的评分合并进 `user_ratings` | 幂等，可重复执行 |
 | `006_add_movie_rating_stats.sql` | 建 `movie_rating_stats` 表（MovieLens 五档分布） | 建表不灌数据，建完必须跑 `scripts/build_ml_rating_stats.py`，否则详情页「评分统计」只有本站评分 |
 | `007_add_comment_edited_at.sql` | 给 `movie_comments` 加 `edited_at`（影评「上次修改于」） | 缺失会让影评接口报表列不存在（模型会 select 该列）。`ADD COLUMN` 不幂等，重跑报 1060 |
+| `008_drop_legacy_ratings.sql` | 删除 legacy `ratings` 表（数据已由 005 合并进 `user_ratings`） | 幂等。仅 2026-09-14 之前的存量库需要执行；全新建库直接跑 `schema.sql` |
 | `003_rename_ratings_table.sql` | 已废弃，仅用于说明历史 | 重命名语句从未启用，且方向与最终方案相反，不要执行 |
 
 > 三个 `001_*.sql` 编号撞车（是不同时间点分别新增的），执行顺序不影响结果，但建议按上表顺序执行，`002` 不要漏。
 
-自 2026-09-14 起，`user_ratings` 是评分的唯一事实来源：应用写入、Spark 训练、在线推荐都只读写 `user_ratings`，legacy `ratings` 仅作只读保留。当前数据库中 `ratings` 表为 0 行、且没有任何外键。
+自 2026-09-14 起，`user_ratings` 是评分的唯一事实来源：应用写入、Spark 训练、在线推荐都只读写 `user_ratings`。legacy `ratings` 已由迁移 `008_drop_legacy_ratings.sql` 删除（数据此前已由 `005` 合并）。
 
 除 `005` 会把 `ratings` 中 `user_ratings` 尚未存在的评分行复制过来之外，其余迁移都不会复制或删除已有数据。所有迁移都支持重复执行，`model_versions.rank` 已使用 MySQL 保留字安全写法。
 
@@ -264,14 +265,19 @@ bash scripts/init_hdfs.sh
 spark-submit --master local[*] spark/preprocess.py
 ```
 
-预处理会解析电影年份、去除无效行、按 `movie_id` 去重，并写入 MySQL `movies` 表。
+预处理会解析电影年份、去除无效行、按 `movie_id` 去重，并经暂存表 upsert 写入 MySQL `movies` 表。
 
-> 已知限制：`spark/preprocess.py` 通过 JDBC `overwrite` 写 `movies`，即先清空整表，再写入只含 `movie_id`、`title`、`genres`、`year` 四列的数据。
+> 可重复执行（2026-09-16 起）：清洗结果先写入每次重建的 `movies_staging` 暂存表，
+> 再由 `upsert_movies_from_staging()` 以 `INSERT ... ON DUPLICATE KEY UPDATE` 合并进
+> `movies`——已有电影只更新 `title`、`genres`、`year`，`import_movie_stats.py` /
+> `fetch_posters.py` 维护的统计与富化列原样保留，`movie_comments`、
+> `movie_rating_stats` 的外键也不会再挡住刷新。
 >
-> - **外键**：引用 `movies` 的外键实测有两条——`movie_comments.movie_id` 与 `movie_rating_stats.movie_id`（当前活库；`schema.sql` 中 legacy `ratings` 的 DDL 还声明了 `movie_id → movies.movie_id` 与 `user_id → users.id` 两条，按该 DDL 全新建库时会再多两条，实测共 7 条）。`user_ratings` 只对 `users.id` 建了外键，`recommendations` 和 `model_item_factors` 都没有指向 `movies` 的外键，`schema.sql` 的 `movies` 注释与之一致。MySQL 不允许 TRUNCATE 被外键引用的表，且与引用表里有没有数据无关，所以只要 `movie_comments`（或按 DDL 建库时的 `ratings`）存在，再次执行预处理就会失败。
-> - **元数据丢失**：即使绕过外键，`movies` 上由 `import_movie_stats.py`、`fetch_posters.py` 写入的 `avg_rating`、`rating_count`、`poster_url`、`overview`、`director` 等字段也会被一并清空；`movie_rating_stats` 依赖 `movies` 行存在，重载 `movies` 后必须重跑 `scripts/build_ml_rating_stats.py` 重建，否则详情页「评分统计」只剩本站评分。
->
-> 当前不要把这条命令当作可重复的生产刷新流程；应先改为 staging/upsert 或设计明确的元数据刷新迁移。
+> - 早期实现是 JDBC `overwrite` 直写 `movies`：TRUNCATE 会被上述两条外键挡住
+>   （与引用表有无数据无关），绕过外键也会把海报、简介等扩展列清空，重载后还得
+>   重跑 `scripts/build_ml_rating_stats.py`。该问题已随 staging/upsert 改造消除。
+> - 若某部电影已从 MovieLens 数据中消失但仍被评论/评分统计引用，upsert 会保留
+>   该行并打印 WARNING，不会强行删除。
 
 ### 7.3.1 评分统计聚合（ratings_clean.csv）
 
@@ -356,7 +362,7 @@ Vite 会把 `/api/*` 代理到 `http://localhost:8000`。如果页面显示 `Tot
 
 > 端口说明：本项目后端固定使用 `8000`（`config.yaml` 的 `flask.port`，前端 `vite.config.js` 的代理目标必须与之保持一致）。早期文档里的 `5000` 是历史值——本机因系统端口策略不允许绑定 5000/5001，已整体迁移到 8000。
 
-> `scripts/start_dev.sh` 目前仍使用旧的虚拟环境相对路径判断，在 Linux 上可能回退到系统 Python。Linux 联合启动前应先确认脚本中的 Python 路径与实际虚拟环境一致。
+> `scripts/start_dev.sh` 会优先探测 `backend/venv`（兼容 Linux `bin/` 与 Windows `Scripts/`），探测不到再回退系统 Python；日志写入 `logs/`。
 
 ## 9. API
 
@@ -473,11 +479,12 @@ Authorization: Bearer <JWT>
 ```bash
 python -m unittest discover -s tests -v
 python -m compileall -q backend spark scripts
+npm run lint --prefix frontend
 npm run build --prefix frontend
 git diff --check
 ```
 
-当前测试覆盖（共 21 个，`discover` 默认收集全部）：
+当前测试覆盖（13 个测试模块、156 个用例，`discover` 默认收集全部）：
 
 - 用户 ID 命名空间隔离：系统用户 ID 必须为正整数，MovieLens 用户 ID 取负后落在 `[-162541, -1]`，不与系统用户冲突（`tests/test_user_id_namespace.py`）；
 - ALS 输入只读 `user_ratings`、不读 legacy `ratings`，且 MovieLens 与系统用户评分都会被合并（`tests/test_training_contract.py`）；
@@ -487,6 +494,9 @@ git diff --check
 - 已评分电影不进入推荐列表；非负约束下解向量不含负因子（`tests/test_online_recommender.py`）；
 - 模型版本变化时刷新因子缓存；因子缺失或用户无评分时回退批量推荐（`tests/test_recommendation_service.py`）；
 - 模型生命周期 SQL 契约：激活新模型前先退役旧 active，训练失败只清理 `building` 版本（`tests/test_model_lifecycle.py`）；
+- auth 路由集成测试（临时 SQLite）：注册/登录成功链路、入参校验、用户名重复 409、错误密码与不存在用户统一 401、历史 bcrypt 哈希按密码错误处理而非 500、token identity 与用户 id 一致（`tests/test_auth_routes.py`）；
+- recommendations 路由集成测试：JWT 必须（无 token/坏 token 401）、推荐列表透传、空推荐降级为 200 + 提示语、路由使用 create_app 注入的服务单例（`tests/test_recommendations_route.py`）；
+- 评分与影评端到端（临时 SQLite）：成对发表、一人一片一条、可见性由评分推导、编辑记 `edited_at` 等（`tests/test_comment_flow.py`）；
 - MySQL `rank` 保留字转义（`tests/test_sql_schema_contract.py`）与 Windows 启动入口契约（`tests/test_startup_contract.py`）。
 
 > 这些测试依赖 numpy，请使用已装好依赖的解释器运行（例如 `backend/venv/Scripts/python.exe -m unittest discover -s tests -v`），否则在线推荐相关的用例会因导入失败而报错。
@@ -505,14 +515,14 @@ git diff --check
 
 0. **评分表分裂（已于 2026-09-14 修复）**：应用此前把评分写入 legacy `ratings`，而训练读 `user_ratings`，导致前端评分永远进不了训练集。已通过迁移 `005` 合并数据、`models.py` 改用 `UserRating`（`user_ratings` 表）修复，并由 `tests/test_rating_table_contract.py` 与 `tests/test_training_contract.py` 两端契约锁定。
 
-1. **预处理刷新流程不安全**：`preprocess.py` 的 JDBC `overwrite` 会清空 `movies`，与 `movie_comments.movie_id → movies.movie_id` 外键冲突，且会抹掉海报、简介等扩展元数据，应改成 staging/upsert（详见 7.3）。
-2. **Linux 联合启动脚本路径过时**：`scripts/start_dev.sh` 检查的是项目根目录下的 `venv`，而项目实际约定的是 `backend/venv`。
-3. **JWT 有效期未显式配置**：代码与旧 README 的“7 天”描述不一致，应在配置中明确设置并同步文档。另：实测签发 token 时 PyJWT 会告警 HMAC 密钥仅 27 字节，短于 SHA256 建议的 32 字节（RFC 7518 §3.2），正式部署前应更换为足够长的随机密钥。
-4. **端到端测试不足**：当前测试主要是纯函数和代码契约测试，不能替代真实 Spark、MySQL 和浏览器验证。
+1. **预处理刷新流程不安全（已于 2026-09-16 修复）**：`preprocess.py` 原先用 JDBC `overwrite` 直写 `movies`，会被 `movie_comments.movie_id → movies.movie_id` 外键挡住，即使绕过也会抹掉海报、简介等扩展元数据。现改为 staging/upsert：清洗结果先写每次重建的 `movies_staging`，再 `INSERT ... ON DUPLICATE KEY UPDATE` 合并进 `movies`，统计列与富化列保留、可重复执行（见 `spark/utils/mysql_utils.py` 的 `reset_movies_staging` / `upsert_movies_from_staging`）。
+2. **Linux 联合启动脚本路径（已于 2026-09-16 确认修复）**：`scripts/start_dev.sh` 现已优先探测 `backend/venv`（兼容 `bin/` 与 `Scripts/`），探测失败才回退系统 Python，与项目约定一致。
+3. **JWT 有效期（已于 2026-09-16 显式配置）**：`config.yaml` 新增 `jwt.access_token_expires_hours`（默认 168 小时 = 7 天，与文档一致），经 `backend/config.py` 注入 `JWT_ACCESS_TOKEN_EXPIRES`。另：实测签发 token 时 PyJWT 会告警 HMAC 密钥仅 27 字节，短于 SHA256 建议的 32 字节（RFC 7518 §3.2），正式部署前应更换为足够长的随机密钥。登录接口目前没有速率限制，公网部署前建议在反向代理层加限流。
+4. **端到端测试不足**：auth、评分/影评、推荐三条后端链路已有路由级集成测试（2026-09-16 起，跑在临时 SQLite 上），但真实的 Spark/HDFS/JDBC 训练与浏览器端行为仍未自动化，需人工验证。
 5. **伴随文档已同步（2026-09-14）**：`AGENTS.md` 的目录结构、数据库表说明、评分链路与常用命令已按代码重写；`arch_diagram.html` 的「ratings 双用途」卡片、bcrypt 描述、以及不自洽的统计数字已修正；`CLAUDE.md` 早已收敛为指向 `AGENTS.md` 的指针，不再重复维护正文。
 6. **前端重复未使用模块已清理（2026-09-16）**：`api/client.js` 已并入 `api/index.js`（全站单一 axios 实例，错误 toast 统一由拦截器弹出）；`stores/user.js`、`views/MoviesView.vue` 与后端死接口 `GET /api/profile/ratings` 已删除。
 7. **迁移脚本插入的默认 admin 账号曾无法登录（已于 2026-09-14 修复）**：`sql/migrations/001_add_user_role.sql` 原先写入 bcrypt 哈希（`$2b$12$...`），而 `backend/app/models.py` 用 `werkzeug.security.check_password_hash` 校验，且已安装的 werkzeug 3.0.3 早就移除了 bcrypt 支持，会抛 `ValueError: Invalid hash method ''`；`routes/auth.py` 的 `login()` 未捕获该异常，登录返回 500 而非 401。已把脚本里的哈希换成 `generate_password_hash` 生成的 scrypt 哈希（默认参数），并在活库补上 `admin` 账号（密码 `admin123`，首次部署后应立即修改）。端到端验证：`POST /api/auth/login` 用 `admin/admin123` 返回 200 并下发 token，错误密码返回 401。
-8. **`schema.sql` 曾有三张表无法创建（已于 2026-09-14 修复）**：`user_ratings`、`model_item_factors`、`movie_comments` 原本写成 `CONSTRAINT ... FOREIGN KEY ... ON DELETE CASCADE COMMENT '...'`，而 MySQL 8.0 不允许在外键子句后接 `COMMENT`，会报 `1064`，导致全新库执行 `schema.sql` 时这三张表建不出来。已改为普通 SQL 注释，并同步修掉 `sql/migrations/002_create_movie_comments_table.sql` 里同样的两处；实测当时 8 张表全部可从零建出（`schema.sql` 现为 9 张，新增的 `movie_rating_stats` 沿用同一写法，见 6.1）。
+8. **`schema.sql` 曾有三张表无法创建（已于 2026-09-14 修复）**：`user_ratings`、`model_item_factors`、`movie_comments` 原本写成 `CONSTRAINT ... FOREIGN KEY ... ON DELETE CASCADE COMMENT '...'`，而 MySQL 8.0 不允许在外键子句后接 `COMMENT`，会报 `1064`，导致全新库执行 `schema.sql` 时这三张表建不出来。已改为普通 SQL 注释，并同步修掉 `sql/migrations/002_create_movie_comments_table.sql` 里同样的两处；实测当时 8 张表全部可从零建出（新增的 `movie_rating_stats` 沿用同一写法，见 6.1；legacy `ratings` 已于 2026-09-16 从 `schema.sql` 移除并由迁移 008 删除，现共 8 张表）。
 9. **活库与 `schema.sql` 的列漂移已消除（2026-09-14）**：活库 `movies` 曾多出 `poster_w185`、`poster_w342`、`poster_w780`、`poster_original` 四列（`varchar(500)`，TMDB 图片尺寸变体，早期“一部电影存 4 种尺寸海报”设计的残留）。它们不在 `schema.sql`、不在任何迁移脚本、全项目代码零引用，且实测 87,585 行中这四列 100% 全为 NULL——从未写入过任何值。已用 `ALTER TABLE movies DROP COLUMN` 删除，活库现为 15 列，与 `schema.sql` 一致。
 
 ## 13. 安全与运维注意事项

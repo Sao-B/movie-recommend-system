@@ -1,6 +1,9 @@
 """
 preprocess.py — 从 HDFS 读取 MovieLens 原始 movies.csv，
-                清洗后将电影元数据写入 MySQL movies 表。
+                清洗后经 staging 表 upsert 进 MySQL movies 表。
+
+可重复执行：upsert 只更新 title/genres/year，不会清空 TMDB 富化列与
+MovieLens 统计列，也不会触发 movie_comments / movie_rating_stats 的外键冲突。
 
 运行方式：
     spark-submit --master local[*] spark/preprocess.py
@@ -15,7 +18,11 @@ sys.path.insert(0, os.path.dirname(__file__))
 from pyspark.sql import functions as F
 
 from utils.spark_session import get_spark_session
-from utils.mysql_utils import write_df_to_mysql
+from utils.mysql_utils import (
+    write_df_to_mysql,
+    reset_movies_staging,
+    upsert_movies_from_staging,
+)
 
 
 def main():
@@ -65,14 +72,26 @@ def main():
     count = movies.count()
     print(f"清洗后电影总数: {count:,}")
 
-    # ── 3. 写入 MySQL movies 表 ───────────────────────────────────
-    print("写入 MySQL movies 表 ...")
+    # ── 3. 写入 MySQL：先 staging 暂存，再 upsert 进 movies ──────
+    # 不能直接 overwrite movies：TRUNCATE 会被 movie_comments /
+    # movie_rating_stats 的外键挡住，即使绕过也会清空统计与富化列。
+    print("重建 movies_staging 暂存表 ...")
+    reset_movies_staging(mysql_cfg)
+    print("写入 MySQL movies_staging 暂存表 ...")
     write_df_to_mysql(
-        movies, "movies", jdbc_url,
+        movies, "movies_staging", jdbc_url,
         mysql_cfg["user"], mysql_cfg["password"],
         mode="overwrite"
     )
-    print("movies 表写入完成 ✓")
+    print("upsert 进 movies 表 ...")
+    affected, orphans = upsert_movies_from_staging(mysql_cfg)
+    print(f"movies 表 upsert 完成 ✓（影响 {affected:,} 行）")
+    if orphans:
+        sample = ", ".join(str(m) for m in orphans[:10])
+        print(
+            f"WARNING: {len(orphans):,} 部电影已不在 MovieLens 数据中，"
+            f"但被评论/评分统计外键引用，予以保留（示例: {sample}）"
+        )
 
     spark.stop()
 

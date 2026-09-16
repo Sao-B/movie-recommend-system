@@ -26,7 +26,13 @@ def create_app(config_obj=None):
     # CORS_ORIGINS 未配置时默认限制本地开发端口，不开放 "*"
     origins = app.config.get("CORS_ORIGINS") or ["http://localhost:5173"]
     CORS(app, origins=origins)
-    JWTManager(app)
+    jwt = JWTManager(app)
+
+    # 坏 token（格式错误/签名不符）默认返回 422，前端的 401 拦截器接不住，
+    # 用户会卡在「带坏 token 请求」的状态里无法回到登录页。统一按 401 处理。
+    @jwt.invalid_token_loader
+    def _invalid_token(_reason):
+        return jsonify({"msg": "登录凭证无效，请重新登录"}), 401
 
     # 在线推荐服务：应用级单例，避免多线程环境下重复构建因子缓存
     from .recommendation_service import OnlineRecommendationService
