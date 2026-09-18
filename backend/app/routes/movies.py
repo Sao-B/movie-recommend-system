@@ -1,8 +1,9 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import get_jwt_identity, jwt_required
-from sqlalchemy import func
+from sqlalchemy import case, func
 from ..db import db
 from ..models import Movie, MovieRatingStats, UserRating
+from ..movie_search import movie_keyword_filter, parse_movie_id
 from ..rating_stats import count_ratings, merge_counts, summarize_counts
 
 movies_bp = Blueprint("movies", __name__)
@@ -15,7 +16,15 @@ M_PRIOR = 500  # 贝叶斯先验门槛：热门池评分人数的中位数（实
 
 @movies_bp.get("/")
 def list_movies():
-    """GET /api/movies?page=1&per_page=20&genre=Action&q=keyword&year=1995&sort=popular"""
+    """GET /api/movies?page=1&per_page=20&genre=Action&q=keyword&year=1995&sort=popular
+
+    ``q`` 是万能搜索词（规则见 ``app/movie_search.py``）：
+
+    - ``q=ID318``（小写 ``id318`` 同样认）→ **只**按 ``movie_id`` 精确命中，结果就那一条
+      （最快，主键查询）；``id`` 与数字之间不能有空格或符号；
+    - ``q=318`` → 片名 / 简介含 "318" 的片子 OR ``movie_id=318``，ID 那条排最前；
+    - ``q=Toy`` / ``q=监狱`` → 片名 / 简介子串命中。
+    """
     page     = max(1, request.args.get("page", 1, type=int))
     per_page = min(100, request.args.get("per_page", _PAGE_SIZE, type=int))
     genre    = request.args.get("genre", "").strip()
@@ -28,7 +37,15 @@ def list_movies():
     if genre:
         query = query.filter(Movie.genres.like(f"%{genre}%"))
     if keyword:
-        query = query.filter(Movie.title.ilike(f"%{keyword}%"))
+        query = query.filter(movie_keyword_filter(keyword))
+        # ID 精确命中的那条排到最前：搜 "318" 的人要的就是这一部，
+        # 不该被「简介里恰好含 318」的片子挤下去。
+        # order_by 是追加语义，这句必须放在下面的排序分支之前。
+        exact_movie_id = parse_movie_id(keyword)
+        if exact_movie_id is not None:
+            query = query.order_by(
+                case((Movie.movie_id == exact_movie_id, 0), else_=1)
+            )
     if year:
         query = query.filter(Movie.year == year)
 
@@ -51,7 +68,11 @@ def list_movies():
             + m / (func.coalesce(Movie.rating_count, 0) + m)
             * global_mean
         )
-        query = query.filter(Movie.rating_count >= MIN_RATING_COUNT_FOR_POPULAR)
+        if not keyword:
+            # 评分人数门槛是「热门榜」的入榜门票，只在无关键词浏览时生效：
+            # 带关键词时用户是在找具体某部片（往往就是冷门片），
+            # 被门槛挡掉会表现得像「搜不到」。
+            query = query.filter(Movie.rating_count >= MIN_RATING_COUNT_FOR_POPULAR)
         query = query.order_by(weighted.desc(), func.coalesce(Movie.rating_count, 0).desc())
     elif sort == "latest":
         query = query.order_by(func.coalesce(Movie.year, 0).desc())

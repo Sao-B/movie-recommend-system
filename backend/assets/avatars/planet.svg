@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>planet avatar</title>
+  <circle cx="32" cy="32" r="32" fill="#3f51b5"/>
+  <ellipse cx="32" cy="32" rx="23" ry="7" fill="none" stroke="#ffffff" stroke-width="3" opacity="0.55"/>
+  <circle cx="32" cy="32" r="13.5" fill="#ffffff"/>
+  <g fill="#3f51b5" opacity="0.4">
+    <circle cx="26.5" cy="27" r="3.2"/><circle cx="36.5" cy="36" r="2.2"/>
+  </g>
+</svg>

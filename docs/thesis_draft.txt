@@ -173,9 +173,9 @@ ratings.csv 中的评分值本身已符合 0.5~5.0 范围约束，不需要额�
 
 3.2.4  评分统计聚合
 
-在电影元数据清洗与评分规范化之外，预处理阶段还对评分明细做了一次按电影粒度的统计聚合：以 movieId 为键，计算每部电影的评分条数、均值、中位数、标准差、极值、四分位数等 11 项指标，产出聚合文件 ratings_clean.csv（84,432 行，与有评分记录的电影数一致）。该文件由脚本 build_ratings_clean.py 从 ratings.csv 单遍流式聚合生成，可通过内置的比对模式验证重算结果与既有产物数值等价，保证预处理步骤可复现。
+此外，为给首页热门榜提供评分依据，预处理阶段还对评分明细按 movieId 做了一次聚合，得到每部电影的评分条数、均值、中位数、标准差、极值、四分位数等 11 项统计指标，写入 ratings_clean.csv（84,432 行，与有评分记录的电影数一致），聚合脚本为 build_ratings_clean.py，重跑结果与既有文件逐格相同。
 
-聚合结果经 import_movie_stats.py 将其中的均值与评分条数两列回填到 movies 表的 avg_rating 与 rating_count 字段，作为首页热门榜贝叶斯加权排序与前端均分展示的数据来源；评分的五档分布统计则由独立的聚合脚本写入 movie_rating_stats 表，供电影详情页的评分统计展示使用。两者同源但粒度不同，分别服务列表排序与详情统计两类场景。
+聚合结果中的均值与评分条数两列由 import_movie_stats.py 回填到 movies 表的 avg_rating 与 rating_count 字段，作为首页热门榜贝叶斯加权排序与前端均分展示的数据来源；评分的五档分布则由独立的聚合脚本写入 movie_rating_stats 表，供电影详情页展示。两者同源但粒度不同，分别服务列表排序与详情统计。
 
 3.3  训练数据构造
 
@@ -209,9 +209,9 @@ MovieLens-32M 中的用户 ID 为整数，最大值为 200,961。系统注册用
 
 取负后的 MovieLens 用户 ID 范围为 [-200,961, -1]，而系统用户 ID 恒为正整数（从 1 开始自增），两套 ID 在数轴上天然不重叠。相比"加常量偏移"的方案，取负方案无需维护偏移量参数，也无需校验"系统用户 ID 是否越过偏移阈值"——无论系统用户增长到多大规模，两类 ID 都不可能冲突，隔离性由数域本身保证而非由参数阈值保证。训练完成后，ALS 输出的推荐结果按系统用户 ID 过滤（left semi join），仅保留 users 表中存在的用户对应的推荐，不保存 MovieLens 虚拟用户的推荐记录。
 
-3.4.3  用户 ID 命名空间校验
+3.4.3  用户 ID 命名空间
 
-尽管取负方案在数域上保证了隔离，训练作业仍在启动时执行命名空间校验（user_id_namespace.py）：读取 users 表的最大 ID 值 max_system_user_id，校验其为非负整数（系统用户 ID 必须为正），并输出两套 ID 的实际取值区间（系统用户 [1, max_system_user_id]，MovieLens 用户 [-max_ml_user_id, -1]）供日志审计。若 users 表中出现非法的负数 ID，校验立即失败并中止训练，避免在数据被污染的情况下训练出 ID 混淆的模型。
+系统用户 ID 为正整数，MovieLens 用户 ID 取负后落在负半轴，两套 ID 在数轴上互不相交，因此不需要额外的冲突校验。训练作业在启动时读取 users 表的最大 ID 值 max_system_user_id，打印两套 ID 的实际取值区间（系统用户 [1, max_system_user_id]，MovieLens 用户 [-max_ml_user_id, -1]）供日志审计。
 
 
 第4章  基于 ALS 的电影推荐模型设计
@@ -480,7 +480,6 @@ Flask 服务在每次推荐请求时查询 status = 'active' 的版本，只有�
     ALS 训练          spark/train_als.py               ALS 训练、因子与推荐写入
     训练工具          spark/utils/mysql_utils.py       JDBC 读写封装
                       spark/utils/training_contract.py 数据来源契约
-                      spark/utils/user_id_namespace.py ID 命名空间校验
     Flask 入口        backend/app.py                   应用启动
     应用工厂          backend/app/__init__.py          扩展初始化、蓝图注册
     ORM 模型          backend/app/models.py            SQLAlchemy 数据模型
@@ -779,7 +778,7 @@ movie_rating_stats 表存储 MovieLens 全量评分的五档分布，是电影�
 
 （2）基于固定电影因子的在线 NNLS 推荐机制，在不重新训练全局模型的前提下，实现了用户新增评分后推荐的即时更新，有效弥补了离线批量推荐在时效性上的不足，对于缓解新用户冷启动问题具有实际意义。
 
-（3）用户 ID 命名空间隔离设计（通过为 MovieLens 用户 ID 添加固定偏移量）和模型版本状态机管理（building→active→retired）是保证系统数据正确性与服务连续性的关键工程措施，在实际部署中均经过了验证。
+（3）用户 ID 命名空间隔离设计（将 MovieLens 用户 ID 取负，使其与系统用户的正整数 ID 在数轴上天然隔离）和模型版本状态机管理（building→active→retired）是保证系统数据正确性与服务连续性的关键工程措施，在实际部署中均经过了验证。
 
 8.3  系统实现总结
 

@@ -15,14 +15,6 @@ def build_system_ratings_query():
     return "(SELECT user_id AS userId, movie_id AS movieId, rating FROM user_ratings) AS t"
 
 
-def clamp_rating(value):
-    """Clamp a predicted rating back into the observed rating scale [0.5, 5.0].
-
-    ALS 预测是隐向量点积，训练不足时可能超出评分量纲；写入/展示前必须截断。
-    """
-    return max(RATING_MIN, min(RATING_MAX, float(value)))
-
-
 def rating_bucket(user_id, movie_id):
     """Deterministic bucket in [0, SPLIT_BUCKETS) for one (user, movie) rating.
 

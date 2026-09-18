@@ -4,8 +4,8 @@
     <el-card class="filter-bar" shadow="never">
       <el-row :gutter="12" align="middle">
         <el-col :span="8">
-          <el-input v-model="filters.q" placeholder="搜索电影名称..."
-            prefix-icon="Search" clearable @keyup.enter="doSearch" @clear="doSearch" />
+          <el-input v-model="filters.q" placeholder="搜索片名 / 简介 / ID"
+            :prefix-icon="Search" clearable @keyup.enter="doSearch" @clear="doSearch" />
         </el-col>
         <el-col :span="5">
           <el-select v-model="filters.genre" placeholder="类型" clearable @change="doSearch">
@@ -50,6 +50,7 @@
 <script setup>
 import { ref, reactive, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { Search } from '@element-plus/icons-vue'
 import MovieCard from '@/components/MovieCard.vue'
 import { apiMovies } from '@/api/movies'
 

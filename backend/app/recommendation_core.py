@@ -21,9 +21,12 @@ def solve_user_vector(
     item_factors: np.ndarray,
     ratings: np.ndarray,
     reg_param: float,
-    nonnegative: bool = True,
 ) -> np.ndarray:
-    """Solve the fixed-item ALS user step with optional nonnegative factors."""
+    """Solve the fixed-item ALS user step，非负约束（与离线训练一致）。
+
+    把 ``sqrt(reg_param) * I`` 纵向拼到因子矩阵、把对应评分补 0，等价于带 L2 正则的
+    最小二乘；交给 ``nnls`` 解就能顺带满足非负约束。
+    """
     factors = np.asarray(item_factors, dtype=float)
     values = np.asarray(ratings, dtype=float)
     if factors.ndim != 2 or values.ndim != 1:
@@ -40,13 +43,8 @@ def solve_user_vector(
     augmented_factors = np.vstack((factors, regularizer))
     augmented_ratings = np.concatenate((values, np.zeros(rank)))
 
-    if nonnegative:
-        vector, _ = nnls(augmented_factors, augmented_ratings)
-        return vector
-
-    lhs = factors.T @ factors + reg_param * np.eye(rank)
-    rhs = factors.T @ values
-    return np.linalg.solve(lhs, rhs)
+    vector, _ = nnls(augmented_factors, augmented_ratings)
+    return vector
 
 
 def rank_unrated_items(

@@ -63,7 +63,6 @@ class OnlineRecommendationService:
             np.asarray(rated_factors),
             np.asarray(rated_values),
             reg_param=float(model.reg_param),
-            nonnegative=True,
         )
 
         movie_ids = sorted(factors)
@@ -118,9 +117,8 @@ class OnlineRecommendationService:
             else:
                 try:
                     recs = self._online_recommendations(user_id, model, ratings)
-                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                    recs = self._batch_recommendations(user_id, str(model.version))
                 except Exception:
+                    # 在线求解失败（因子缺失、用户评分异常等）一律降级到批量推荐
                     logger.exception("online recommendation failed for user_id=%s", user_id)
                     recs = self._batch_recommendations(user_id, str(model.version))
 

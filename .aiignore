@@ -1,63 +1,46 @@
 # .aiignore —— 跨 Agent 上下文忽略清单（唯一事实来源）
 #
-# 适用对象：DSH / Codex / Claude Code / Cursor / Aider / Continue 等
-# 所有接手本项目的 AI Agent。语法与 .gitignore 一致，但用途不同：
+# 适用对象：DSH / Codex / Claude Code / Cursor / Aider / Continue 等所有接手本项目的 AI Agent。
+# 收录标准只有一条：**读了会大幅撑爆上下文**——体积大、文件数上万、或会无限增长。
 #
-#   .gitignore  → 不进版本库
-#   .aiignore   → 不进 AI 上下文（不读取、不注入、不作为实现参考）
+# 注释一律独占一行：gitignore 语法不认行内注释，行内 # 会被算进模式，整条规则等于没写。
+#
+# 其余顾虑各有归属，不在这里：
+#   .gitignore → 不进版本库（config.yaml、.env、venv/、backend/uploads/ …）
+#   项目目前没有 *.pem / *.key / credentials.json / .ssh / .aws；
+#   真出现时加进 .gitignore 即可，不必再加回本文件。
 #
 # 本文件是唯一事实来源：
 #   AGENTS.md         → 「上下文忽略清单」章节，摘要 + 指向本文件
 #   .claudeignore.md  → 指向本文件的指针
-#   .gitignore        → git 层兜底
-# 修改规则只需改这里，不要在别处重复维护。
 
-# ── 1. 巨型日志与生成物（最高优先级：体积大，最容易一次性吃满上下文）──
-*.log
-logs/
-
-# ── 2. 生成物与非源码 ──
-arch_diagram.html              # 生成的架构图（已入库，但不必进 AI 上下文）
-thesis_draft.txt               # 论文草稿（已入库）；若任务明确是改写论文，再由用户单独指定
-frontend/dist/
-node_modules/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-*.swp
-*.swo
-
-# ── 3. 凭据与密钥（禁止读取、禁止输出到对话、禁止提交）──
-config.yaml
-config.local.yaml
-.env
-*.env.local
-*.pem
-*.key
-credentials.json
-.npmrc
-.aws/
-.ssh/
-
-# ── 4. 数据集（过大，按需单独抽样）──
+# ── 1. 数据集：GB 级 ──
+# data/raw 961 MB（ratings.csv 单个 836 MB）；派生 CSV 同为百万行级
 data/raw/
 data/processed/
 *.csv
-*.dat
 
-# ── 5. Agent / 工具本地配置（与业务逻辑无关）──
-.claude/settings.local.json
-.claude/plans/
-.claude/skills/
+# ── 2. 依赖与缓存：百 MB 级、文件数上万 ──
+# backend/venv 352 MB / 10,826 个文件；node_modules 149 MB / 15,797 个文件；
+# 项目代码里 8 个 __pycache__ 目录 / 97 个 .pyc；另 416 个目录、91 MB 在 backend/venv 内（已被 venv/ 覆盖）
+venv/
+.venv/
+node_modules/
+__pycache__/
+*.py[cod]
+
+# ── 3. 构建产物：压缩后的单个 JS 即可塞满上下文 ──
+frontend/dist/
+
+# ── 4. 会无限增长 ──
+# 现在只有 9 KB，但随运行一直长
+logs/
+*.log
+
+# ── 5. 技能框架：374 KB 纯文本，且经 Skill 工具按需加载 ──
 .agents/
-.cursor/
-.aider*
-.continue/
-.cody/
-.vscode/
-.idea/
+.claude/skills/
 
-# ── 6. 运行时目录 ──
-hadoop/tmp/
-hadoop/dfs/
-backend/uploads/               # 用户上传的头像图片（运行时数据，二进制，不必进上下文）
+# ── 6. 大部头草稿：80 KB ──
+# 任务明确是改写论文时，由用户单独点名
+thesis_draft.txt

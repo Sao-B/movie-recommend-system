@@ -12,21 +12,18 @@ export async function getUserInfo() {
 
 /**
  * 更新用户信息
- * @param {Object} data - { username?, bio? }（头像走 uploadAvatar，不从这里改）
+ * @param {Object} data - { nickname?, bio?, avatar_url? }
+ *   头像只接受内置清单里的地址，或用 null 表示「恢复默认」；账号不可改，后端会 400。
  */
 export async function updateUserInfo(data) {
   return http.put('/profile/info', data)
 }
 
 /**
- * 上传头像（multipart/form-data，字段名 file）。
- * 成功后返回更新后的用户信息，avatar_url 指向本服务的读取地址。
- * @param {File} file - 本地图片文件
+ * 内置 SVG 头像清单：[{ id, name, url }]，顺序即选择面板里的展示顺序。
  */
-export async function uploadAvatar(file) {
-  const form = new FormData()
-  form.append('file', file)
-  return http.post('/profile/avatar', form)
+export async function getPresetAvatars() {
+  return http.get('/profile/avatars')
 }
 
 /**

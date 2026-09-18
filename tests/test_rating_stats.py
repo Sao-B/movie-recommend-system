@@ -12,7 +12,6 @@ from app.rating_stats import (  # noqa: E402
     merge_counts,
     rating_to_star_bucket,
     summarize_counts,
-    summarize_ratings,
 )
 
 
@@ -127,121 +126,18 @@ class SummarizeCountsTests(unittest.TestCase):
         self.assertEqual(by_star[1]["percent"], 25.0)
 
 
-class SummarizeRatingsTests(unittest.TestCase):
-    """summarize_ratings 是 summarize_counts 的便捷封装，行为需保持兼容。"""
-
-    def test_empty_input_is_well_formed(self):
-        result = summarize_ratings([])
-        self.assertEqual(result["count"], 0)
-        self.assertIsNone(result["average"])
-        self.assertEqual(len(result["distribution"]), 5)
-        for row in result["distribution"]:
-            self.assertEqual(row["count"], 0)
-            self.assertEqual(row["percent"], 0.0)
-
-    def test_distribution_is_ordered_five_stars_first(self):
-        result = summarize_ratings([5, 4, 3, 2, 1])
-        self.assertEqual(STAR_LEVELS, (5, 4, 3, 2, 1))
-        self.assertEqual([row["stars"] for row in result["distribution"]], [5, 4, 3, 2, 1])
-
-    def test_counts_and_average(self):
-        result = summarize_ratings([5, 5, 4, 3, 1])
-        self.assertEqual(result["count"], 5)
-        self.assertEqual(result["average"], 3.6)
-        by_star = {row["stars"]: row["count"] for row in result["distribution"]}
-        self.assertEqual(by_star, {5: 2, 4: 1, 3: 1, 2: 0, 1: 1})
-
-    def test_single_rating(self):
-        result = summarize_ratings([4.5])
-        self.assertEqual(result["count"], 1)
-        self.assertEqual(result["average"], 4.5)
-        by_star = {row["stars"]: row["count"] for row in result["distribution"]}
-        self.assertEqual(by_star[5], 1)          # 4.5 归 5 档
-        self.assertEqual(sum(by_star.values()), 1)
-
-    def test_percentages_sum_to_one_hundred(self):
-        result = summarize_ratings([5] * 7 + [4] * 5 + [3] * 3 + [2] * 2 + [1] * 1)
-        total = sum(row["percent"] for row in result["distribution"])
-        # 每项保留 1 位小数，5 项累计误差不超过 0.25
-        self.assertAlmostEqual(total, 100.0, delta=0.3)
-
-    def test_bucket_counts_match_total(self):
-        ratings = [0.5, 1.5, 2.5, 3.5, 4.5, 5.0, 4.0, 4.0]
-        result = summarize_ratings(ratings)
-        self.assertEqual(sum(row["count"] for row in result["distribution"]), len(ratings))
-
-
 class CommentEndpointContractTests(unittest.TestCase):
-    """影评接口的契约：正文必填、一人一片一条、编辑记 edited_at、可见性由评分推导。"""
+    """影评接口的路由契约（行为本身由 test_comment_flow.py 用真实请求覆盖）。
 
-    def _comments_source(self):
-        return (PROJECT_ROOT / "backend" / "app" / "routes" / "comments.py").read_text(
-            encoding="utf-8"
-        )
-
-    def test_empty_content_is_rejected(self):
-        """只评分不写影评是允许的，但那种情况前端不会调本接口——
-        接口自身仍要求正文非空，不允许落一条空评论。"""
-        self.assertIn("评论内容不能为空", self._comments_source())
-
-    def test_rating_text_generation_is_gone(self):
-        """回归锁：「按评分自动生成评语」这条规则已按要求撤掉，别再长回来。"""
-        self.assertNotIn("build_rating_only_comment", self._comments_source())
-        stats_source = (PROJECT_ROOT / "backend" / "app" / "rating_stats.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertNotIn("build_rating_only_comment", stats_source)
-        self.assertNotIn("RATING_WORDS", stats_source)
-
-    def test_repeat_submit_updates_instead_of_appending(self):
-        """同一用户对同一电影只保留一条影评，避免堆出一串重复评论。"""
-        self.assertIn("comment.content = content", self._comments_source())
+    （原先这里有一批读 comments.py / ratings.py 源码文本的断言，已删：改个变量名就红，
+    把行为真改坏了反而可能绿。）
+    """
 
     @unittest.skipIf(_APP is None, f"无法构建 Flask app: {_APP_ERROR}")
     def test_anonymous_submit_is_rejected(self):
         client = _APP.test_client()
         response = client.post("/api/movies/318/comments", json={"content": "x"})
         self.assertEqual(response.status_code, 401)
-
-    # ---- 评分撤销 ⇄ 影评可见性 ----
-
-    def _ratings_source(self):
-        return (PROJECT_ROOT / "backend" / "app" / "routes" / "ratings.py").read_text(
-            encoding="utf-8"
-        )
-
-    def test_zero_rating_is_rejected_instead_of_revoking(self):
-        """回归锁：0 分不再等于「撤销评分」。
-
-        详情页的评分控件点不出 0 分（clearable 与「删除」链接都撤了），接口也只收
-        0.5~5.0；删评分的唯一入口是 ``DELETE /api/ratings/<movie_id>``（个人中心）。
-        """
-        source = self._ratings_source()
-        self.assertIn("if not (0.5 <= rating <= 5.0)", source)
-        self.assertIn('"rating 范围 0.5 ~ 5.0"', source)
-        self.assertNotIn("rating == 0.0", source)
-        self.assertNotIn("评分已撤销", source)
-        # 删除评分的能力仍在，别把 DELETE 一起删掉
-        self.assertIn('@ratings_bp.delete("/<int:movie_id>")', source)
-
-    def test_list_comments_allows_guests(self):
-        """影评列表要能匿名查看（身份可选），否则游客进详情页会 401。"""
-        self.assertIn("jwt_required(optional=True)", self._comments_source())
-
-    def test_comment_visibility_is_derived_from_rating(self):
-        """可见性只能由「作者此刻有没有评分」推导，不能再存一个状态位。"""
-        source = self._comments_source()
-        self.assertIn('data["visible"] = user_rating is not None', source)
-        self.assertIn("UserRating.id.isnot(None)", source)
-
-    def test_own_comment_is_returned_for_pinning(self):
-        """置顶卡片靠 my_comment，缺了它前端只能自己从时间线里挑。"""
-        self.assertIn('"my_comment"', self._comments_source())
-
-    def test_author_can_edit_own_comment_and_edited_at_is_recorded(self):
-        source = self._comments_source()
-        self.assertIn('@comments_bp.put("/comments/<int:comment_id>")', source)
-        self.assertIn("comment.edited_at = datetime.now(timezone.utc)", source)
 
     @unittest.skipIf(_APP is None, f"无法构建 Flask app: {_APP_ERROR}")
     def test_edit_and_delete_routes_are_registered(self):
@@ -256,29 +152,13 @@ class CommentEndpointContractTests(unittest.TestCase):
 
 
 class RatingStatsEndpointContractTests(unittest.TestCase):
-    """接口注册、可选鉴权，以及「ML + 本站合并」这个统计口径。"""
-
-    def _movies_source(self):
-        return (PROJECT_ROOT / "backend" / "app" / "routes" / "movies.py").read_text(
-            encoding="utf-8"
-        )
-
-    def test_source_uses_optional_jwt(self):
-        source = self._movies_source()
-        self.assertIn('@movies_bp.get("/<int:movie_id>/rating-stats")', source)
-        self.assertIn("jwt_required(optional=True)", source)
-
-    def test_stats_source_includes_local_ratings(self):
-        self.assertIn("UserRating.rating", self._movies_source())
-
-    def test_stats_source_merges_movielens_distribution(self):
-        """回归锁：统计必须把 movie_rating_stats 并进来，不能退回只算本站评分。"""
-        source = self._movies_source()
-        self.assertIn("MovieRatingStats", source)
-        self.assertIn("merge_counts", source)
+    """评分统计接口的路由注册与匿名可访问性——用真实请求，不是读源码。"""
 
     def test_offline_builder_reuses_the_same_bucket_rule(self):
-        """离线聚合脚本必须 import 同一份档位规则，否则两处口径会漂移。"""
+        """离线聚合脚本必须 import 同一份档位规则，否则两处口径会漂移。
+
+        （这条只能读源码：跨进程边界的调用关系没有更「行为化」的检查方式。）
+        """
         builder = (PROJECT_ROOT / "scripts" / "build_ml_rating_stats.py").read_text(
             encoding="utf-8"
         )

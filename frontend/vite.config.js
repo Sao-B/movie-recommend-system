@@ -18,5 +18,10 @@ export default defineConfig({
         changeOrigin: true
       }
     }
+  },
+  // 组件测试（vitest 复用这份配置）：测试文件放在 src/**/__tests__/*.spec.js
+  test: {
+    environment: 'jsdom',
+    include: ['src/**/__tests__/*.spec.js']
   }
 })

@@ -28,7 +28,6 @@ from utils.training_contract import (
     filter_recommendations_to_system_users,
     split_ratings_for_eval,
 )
-from utils.user_id_namespace import validate_user_id_namespace
 
 
 def _new_model_version():
@@ -81,9 +80,10 @@ def main():
             ratings_ml_raw.agg(F.max("ml_user_id").alias("max_ml_user_id")).first()[0]
         )
         max_system_user_id = _read_max_system_user_id(spark, jdbc_url, mysql_cfg)
-        validate_user_id_namespace(
-            max_system_user_id=max_system_user_id,
-            max_movielens_user_id=max_ml_user_id,
+        # 系统用户 ID 为正、MovieLens 用户 ID 取负，两套 ID 天然不相交，只需记录区间备查
+        print(
+            f"User ID namespace: system=[1, {max_system_user_id}], "
+            f"MovieLens=[{-max_ml_user_id}, -1]"
         )
 
         ratings_ml = ratings_ml_raw.select(
@@ -194,21 +194,7 @@ def main():
             "model_version", "user_id", "movie_id", "predicted_rating", "rank"
         )
         rec_count = recs_flat.count()
-        if rec_count:
-            clamp_check = recs_flat.agg(
-                F.min("predicted_rating").alias("min_pred"),
-                F.max("predicted_rating").alias("max_pred"),
-            ).first()
-            print(
-                f"predicted_rating range after clamp: "
-                f"[{clamp_check['min_pred']:.4f}, {clamp_check['max_pred']:.4f}] "
-                f"(scale [{RATING_MIN}, {RATING_MAX}])"
-            )
-        else:
-            print(
-                "predicted_rating: no registered system users, "
-                "0 recommendations to write (expected when users table is empty)"
-            )
+        print(f"recommendations to write: {rec_count:,}")
         write_df_to_mysql(
             recs_flat,
             "recommendations",

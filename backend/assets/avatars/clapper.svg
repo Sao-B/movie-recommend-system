@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>clapper avatar</title>
+  <circle cx="32" cy="32" r="32" fill="#37474f"/>
+  <rect x="14" y="30" width="36" height="21" rx="2.5" fill="#ffffff" opacity="0.92"/>
+  <g stroke="#37474f" stroke-width="2.6" opacity="0.55">
+    <path d="M18 36 H46"/><path d="M18 42 H46"/><path d="M18 48 H36"/>
+  </g>
+  <path d="M13 16 H51 L47 28 H9 Z" fill="#ffffff"/>
+  <g fill="#37474f">
+    <path d="M16.5 16 H24 L20 28 H13 Z"/>
+    <path d="M29 16 H36.5 L32.5 28 H25.5 Z"/>
+    <path d="M41.5 16 H48 L44 28 H37.5 Z"/>
+  </g>
+</svg>

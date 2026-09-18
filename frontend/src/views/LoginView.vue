@@ -3,12 +3,12 @@
     <el-card class="auth-card">
       <template #header><h2 class="card-title">登录</h2></template>
       <el-form :model="form" :rules="rules" ref="formRef" label-position="top">
-        <el-form-item label="用户名" prop="username">
-          <el-input v-model="form.username" placeholder="请输入用户名" prefix-icon="User" />
+        <el-form-item label="账号 / ID" prop="username">
+          <el-input v-model="form.username" placeholder="账号或用户 ID" :prefix-icon="User" />
         </el-form-item>
         <el-form-item label="密码" prop="password">
           <el-input v-model="form.password" type="password" placeholder="请输入密码"
-            prefix-icon="Lock" show-password @keyup.enter="submit" />
+            :prefix-icon="Lock" show-password @keyup.enter="submit" />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="loading" class="full-btn" @click="submit">登录</el-button>
@@ -22,6 +22,7 @@
 <script setup>
 import { ref, reactive } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { User, Lock } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 
@@ -33,12 +34,15 @@ const loading = ref(false)
 const form    = reactive({ username: '', password: '' })
 
 const rules = {
-  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+  // 这个字段既收账号也收用户 ID（纯数字时后端先按账号找、再按 ID 找）
+  username: [{ required: true, message: '请输入账号或用户 ID', trigger: 'blur' }],
   password: [{ required: true, message: '请输入密码',   trigger: 'blur' }],
 }
 
 async function submit() {
-  await formRef.value.validate()
+  // 校验没过就直接返回（与后台页面一致：validate() 失败会 reject，不 catch 会留下未处理的 rejection）
+  const valid = await formRef.value.validate().catch(() => false)
+  if (!valid) return
   loading.value = true
   try {
     await auth.login(form.username, form.password)

@@ -15,6 +15,8 @@
 
           <div class="head-section">
             <h1 class="movie-title">{{ movie.title }}</h1>
+            <!-- 浅灰小字标出 ID，便于在搜索框里用 ID318 这种写法精确查片 -->
+            <div class="movie-id">电影 ID：{{ movie.movie_id }}</div>
             <div class="meta">
               <el-tag v-if="movie.year" type="info">{{ movie.year }}</el-tag>
               <el-tag v-for="g in movie.genres" :key="g" class="genre-tag">{{ g }}</el-tag>
@@ -161,7 +163,8 @@ async function onRatingSubmitted() {
 <style scoped>
 .page        { max-width: 1200px; margin: 0 auto; padding: 20px; }
 .back-btn    { margin-bottom: 12px; }
-.movie-title { font-size: 26px; margin: 0 0 14px; line-height: 1.3; }
+.movie-title { font-size: 26px; margin: 0 0 6px; line-height: 1.3; }
+.movie-id    { font-size: 13px; margin: 0 0 12px; color: var(--app-text-muted); }
 .meta        { display: flex; flex-wrap: wrap; gap: 8px; }
 
 .comment-card {
@@ -176,7 +179,7 @@ async function onRatingSubmitted() {
 }
 
 .section-label {
-  font-size: 14px;
+  font-size: 20px;
   font-weight: 600;
   color: var(--app-text);
   margin: 0 0 8px;
@@ -279,7 +282,7 @@ async function onRatingSubmitted() {
   }
 
   .section-label {
-    font-size: 13px;
+    font-size: 16px;
   }
 }
 </style>

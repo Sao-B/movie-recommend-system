@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>smile avatar</title>
+  <circle cx="32" cy="32" r="32" fill="#43a047"/>
+  <circle cx="32" cy="32" r="19" fill="#ffffff" opacity="0.94"/>
+  <g fill="#43a047">
+    <circle cx="25" cy="28" r="2.7"/><circle cx="39" cy="28" r="2.7"/>
+  </g>
+  <path d="M24 38 A9 9 0 0 0 40 38" fill="none" stroke="#43a047" stroke-width="2.8" stroke-linecap="round"/>
+</svg>

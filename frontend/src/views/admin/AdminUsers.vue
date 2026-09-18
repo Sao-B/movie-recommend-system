@@ -8,7 +8,7 @@
     </template>
 
     <el-form class="search-bar" :inline="true">
-      <el-form-item label="用户名">
+      <el-form-item label="账号">
         <el-input v-model="keyword" placeholder="支持模糊搜索" clearable style="width: 220px" @clear="handleSearch" @keyup.enter="handleSearch" />
       </el-form-item>
       <el-form-item>
@@ -19,7 +19,7 @@
 
     <el-table :data="users" v-loading="loading" border stripe @sort-change="handleSortChange">
       <el-table-column prop="id" label="ID" width="80" sortable="custom" />
-      <el-table-column prop="username" label="用户名" min-width="160" sortable="custom" />
+      <el-table-column prop="username" label="账号" min-width="160" sortable="custom" />
       <el-table-column label="角色" width="120">
         <template #default="{ row }">
           <el-tag :type="row.role === 'admin' ? 'danger' : 'info'" size="small">
@@ -55,8 +55,8 @@
 
   <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑用户' : '新增用户'" width="440px">
     <el-form ref="formRef" :model="form" :rules="rules" label-width="80px">
-      <el-form-item label="用户名" prop="username">
-        <el-input v-model="form.username" :disabled="isEdit" />
+      <el-form-item label="账号" prop="username">
+        <el-input v-model="form.username" :disabled="isEdit" placeholder="3-20 位，字母 / 数字 / _ / -" />
       </el-form-item>
       <el-form-item label="密码" prop="password">
         <el-input v-model="form.password" type="password" show-password :placeholder="isEdit ? '留空表示不修改密码' : ''" />
@@ -80,15 +80,23 @@ import { computed, reactive, ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiAdmin } from '@/api/admin'
 import { formatDateTime } from '@/utils/format'
+import { useTableQuery } from '@/composables/useTableQuery'
 
-const loading = ref(false)
-const users = ref([])
-const total = ref(0)
-const page = ref(1)
-const pageSize = ref(20)
 const keyword = ref('')
-const sortProp = ref('')
-const sortOrder = ref('')
+
+// 分页 / 排序 / 加载骨架见 composables/useTableQuery.js
+const {
+  loading, rows: users, total, page, pageSize,
+  load: loadUsers, search: handleSearch, handleSortChange, reloadAfterDelete,
+} = useTableQuery(async ({ page, pageSize, sortProp, sortOrder }) => {
+  const data = await apiAdmin.listUsers({
+    page,
+    per_page: pageSize,
+    q: keyword.value,
+    ...(sortProp ? { sort: sortProp, order: sortOrder } : {}),
+  })
+  return { rows: data.users, total: data.total }
+})
 
 const dialogVisible = ref(false)
 const isEdit = ref(false)
@@ -97,43 +105,16 @@ const form = reactive({ id: null, username: '', password: '', role: 'user' })
 
 // 编辑时密码可选，新增时必填
 const rules = computed(() => ({
-  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+  // 账号规则与注册一致（后端 app/account_rules.py）；编辑态下账号框是灰的，不校验
+  username: isEdit.value
+    ? []
+    : [
+        { required: true, message: '请输入账号', trigger: 'blur' },
+        { pattern: /^[A-Za-z0-9_-]{3,20}$/, message: '账号 3-20 位，只能包含字母、数字、下划线、连字符', trigger: 'blur' },
+      ],
   password: isEdit.value ? [] : [{ required: true, message: '请输入密码', trigger: 'blur' }, { min: 6, message: '至少 6 个字符', trigger: 'blur' }],
   role: [{ required: true, message: '请选择角色', trigger: 'change' }]
 }))
-
-async function loadUsers() {
-  loading.value = true
-  try {
-    const data = await apiAdmin.listUsers({
-      page: page.value,
-      per_page: pageSize.value,
-      q: keyword.value,
-      ...(sortProp.value ? { sort: sortProp.value, order: sortOrder.value } : {})
-    })
-    users.value = data.users
-    total.value = data.total
-  } finally {
-    loading.value = false
-  }
-}
-
-// 表头点击切换排序；order 为空表示取消排序，回到默认
-function handleSortChange({ prop, order }) {
-  if (order) {
-    sortProp.value = prop
-    sortOrder.value = order === 'ascending' ? 'asc' : 'desc'
-  } else {
-    sortProp.value = ''
-    sortOrder.value = ''
-  }
-  handleSearch()
-}
-
-function handleSearch() {
-  page.value = 1
-  loadUsers()
-}
 
 function handleReset() {
   keyword.value = ''
@@ -182,10 +163,7 @@ async function handleDelete(row) {
 
   await apiAdmin.deleteUser(row.id)
   ElMessage.success('已删除')
-  // 删掉当前页最后一条时把页码退回去，避免停在空白页
-  const lastPage = Math.max(1, Math.ceil((total.value - 1) / pageSize.value))
-  if (page.value > lastPage) page.value = lastPage
-  loadUsers()
+  reloadAfterDelete()
 }
 
 onMounted(loadUsers)

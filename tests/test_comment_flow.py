@@ -22,10 +22,9 @@
 评分只接受 0.5 ~ 5.0：详情页的评分控件点不出 0 分，早先那套「打 0 分＝撤销评分」
 的机制已按要求撤掉；星星旁也不再单独给「删除」，撤销评分一律走上面那条确认框。
 
-环境适配说明：SQLite 只有 ``INTEGER PRIMARY KEY`` 才是 rowid 自增别名，
-模型的 ``BigInteger`` 主键会报 ``NOT NULL constraint failed``。所以建表前
-把这几张表的主键列类型临时换成 ``Integer``，跑完还原——只影响本进程内的 DDL，
-不改生产模型，也不影响其他测试用例。
+环境适配说明：SQLite 只有 ``INTEGER PRIMARY KEY`` 才是 rowid 自增别名，模型的
+``BigInteger`` 主键会报 ``NOT NULL constraint failed``。建表前用共享的
+``tests/sqlite_support.py`` 补丁临时换成 ``Integer``，不改生产模型。
 """
 import sys
 import tempfile
@@ -33,22 +32,20 @@ import unittest
 from datetime import timedelta
 from pathlib import Path
 
-from sqlalchemy import BigInteger, Integer
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "backend"))
 
 from app import create_app                                        # noqa: E402
 from app.db import db                                             # noqa: E402
 from app.models import Movie, MovieComment, User, UserRating      # noqa: E402
 from flask_jwt_extended import create_access_token                # noqa: E402
+from tests.sqlite_support import sqlite_integer_pk_patch          # noqa: E402
 
 TITLE = "Shawshank Redemption, The"
 MOVIE_ID = 318
 UNKNOWN_MOVIE_ID = 99999999
 OTHER_MOVIE_ID = 1
-
-_PK_MODELS = (Movie, User, UserRating, MovieComment)
 
 
 class _TestConfig:
@@ -68,19 +65,15 @@ class RatingCommentFlowTests(unittest.TestCase):
         cls._tmpdir = tempfile.TemporaryDirectory(prefix="rating_comment_flow_")
         db_file = Path(cls._tmpdir.name) / "flow.db"
 
-        cls._saved_pk_types = {}
-        for model in _PK_MODELS:
-            for col in model.__table__.primary_key.columns:
-                cls._saved_pk_types[(model.__tablename__, col.name)] = col.type
-                if isinstance(col.type, BigInteger):
-                    col.type = Integer()
+        with sqlite_integer_pk_patch():
+            _TestConfig.SQLALCHEMY_DATABASE_URI = "sqlite:///" + db_file.as_posix()
+            cls.app = create_app(_TestConfig)
+            with cls.app.app_context():
+                db.create_all()
 
-        _TestConfig.SQLALCHEMY_DATABASE_URI = "sqlite:///" + db_file.as_posix()
-        cls.app = create_app(_TestConfig)
         cls.client = cls.app.test_client()
 
         with cls.app.app_context():
-            db.create_all()
             db.session.add(Movie(movie_id=MOVIE_ID, title=TITLE, year=1994))
             db.session.add(Movie(movie_id=OTHER_MOVIE_ID, title="Toy Story", year=1995))
             user = User(username="flow_user")
@@ -103,11 +96,6 @@ class RatingCommentFlowTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        for model in _PK_MODELS:
-            for col in model.__table__.primary_key.columns:
-                saved = cls._saved_pk_types.get((model.__tablename__, col.name))
-                if saved is not None:
-                    col.type = saved
         try:
             with cls.app.app_context():
                 db.session.remove()
@@ -251,6 +239,22 @@ class RatingCommentFlowTests(unittest.TestCase):
         self.assertEqual(body["comments"][0]["user_rating"], 4.0)
         self.assertEqual(body["comments"][0]["username"], "flow_user")
         self.assertTrue(body["comments"][0]["visible"])
+
+    def test_list_carries_author_avatar_and_display_name(self):
+        """卡片要带头像：作者没设头像时 avatar_url 为 None，前端回落成显示名首字符。"""
+        self._publish("好看")
+        card = self._list(headers={})["comments"][0]
+        self.assertIn("avatar_url", card)
+        self.assertIsNone(card["avatar_url"])
+        self.assertEqual(card["display_name"], "flow_user")
+
+        with self.app.app_context():
+            user = db.session.get(User, self.user_id)
+            user.avatar_url = "/api/profile/avatar/avatar_1_deadbeef.png"
+            db.session.commit()
+
+        card = self._list(headers={})["comments"][0]
+        self.assertEqual(card["avatar_url"], "/api/profile/avatar/avatar_1_deadbeef.png")
 
     def test_my_comment_is_null_without_a_comment_and_for_guests(self):
         self.assertIsNone(self._list()["my_comment"])

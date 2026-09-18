@@ -5,10 +5,10 @@
       <div class="comment-form">
         <h4>影评 ({{ total }})</h4>
 
-        <!-- 还没发表：用户名 + 星星在评论框上面（用户名在星星左边），评分与正文缺一不可 -->
+        <!-- 还没发表：显示名（昵称优先、回落账号）+ 星星在评论框上面（显示名在星星左边），评分与正文缺一不可 -->
         <template v-if="!hasPublished">
           <div class="rate-row">
-            <span class="rate-user">{{ auth.user?.username }}</span>
+            <span class="rate-user">{{ auth.displayName }}</span>
             <!-- 星星不再带「删除」：评分的撤销与影评绑定，走影评卡片上的「删除」 -->
             <el-rate
               :model-value="myRating"
@@ -16,8 +16,6 @@
               :max="5"
               allow-half
               show-score
-              :texts="RATE_TEXTS"
-              show-text
             />
           </div>
 
@@ -153,10 +151,6 @@ const perPage = 10
 
 const newComment = ref('')
 const submitting = ref(false)
-
-// el-rate 的星级文案（1 星 → 5 星）。当前开着 show-score，显示的是分数，
-// 这组文案只在关掉 show-score 之后才露出来。
-const RATE_TEXTS = ['很差', '较差', '还行', '不错', '很棒']
 
 // 已经发表过（库里有一条自己的影评）。发表后详情页就不再显示那个输入框了——
 // 那个位置被自己的影评顶上去（置顶展示），没有「修改」按钮：改正文与改评分都走
@@ -346,7 +340,7 @@ onUnmounted(() => {
   margin-bottom: 24px;
 }
 
-/* 星星那一行：用户名在左、星星在右，压在评论框上方 */
+/* 星星那一行：显示名在左、星星在右，压在评论框上方 */
 .rate-row {
   display: flex;
   align-items: center;

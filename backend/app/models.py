@@ -25,6 +25,9 @@ class User(db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     avatar_url    = db.Column(db.String(500))
     bio           = db.Column(db.Text)
+    #: 昵称（展示用）：任意字符、不唯一、可空；为空时显示回落 ``username``（见 ``display_name``）。
+    #: 账号 ``username`` 只用于登录与标识，注册后不可改，改的是这一列（migrations/011 新增）。
+    nickname      = db.Column(db.String(50))
     created_at    = db.Column(db.DateTime, default=_utcnow)
     role          = db.Column(db.String(16), nullable=False, default='user', server_default='user')
 
@@ -42,10 +45,17 @@ class User(db.Model):
         """检查用户是否为管理员"""
         return self.role == 'admin'
 
+    @property
+    def display_name(self) -> str:
+        """界面上显示给别人看的名字：优先昵称，没设昵称就用账号。"""
+        return self.nickname or self.username
+
     def to_dict(self):
         return {
             "id": self.id,
             "username": self.username,
+            "nickname": self.nickname,
+            "display_name": self.display_name,
             "role": self.role,
             "avatar_url": self.avatar_url,
             "bio": self.bio,
@@ -188,6 +198,11 @@ class MovieComment(db.Model):
             "id":         self.id,
             "user_id":    self.user_id,
             "username":   self.user.username if self.user else None,
+            # 影评署名用 display_name（昵称优先、回落账号）；username 留给需要唯一标识的地方
+            "nickname":     self.user.nickname if self.user else None,
+            "display_name": self.user.display_name if self.user else None,
+            # 卡片头像直接用它；没有头像时为 None，前端回落成显示名首字符
+            "avatar_url":   self.user.avatar_url if self.user else None,
             "movie_id":   self.movie_id,
             "content":    self.content,
             "created_at": _to_iso_utc(self.created_at),

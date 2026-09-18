@@ -58,7 +58,6 @@ class OnlineRecommenderTests(unittest.TestCase):
             self.item_factors[[0, 1]],
             np.array([5.0, 1.0]),
             reg_param=0.1,
-            nonnegative=True,
         )
         self.assertTrue(np.all(user_vector >= -1e-9))
 

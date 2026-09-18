@@ -10,7 +10,7 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional
 
 #: 返回顺序固定为 5 星在前，前端直接按顺序渲染即可
 STAR_LEVELS = (5, 4, 3, 2, 1)
@@ -105,13 +105,3 @@ def summarize_counts(
     ]
 
     return {"count": total, "average": average, "distribution": distribution}
-
-
-def summarize_ratings(ratings: Iterable[float]) -> Dict[str, Any]:
-    """把一串具体评分汇总成总条数、平均分与五档分布。
-
-    ``summarize_counts`` 的便捷封装：具体评分既有精确总和也有档位，两者都给，
-    因此平均分是精确值而不是档位近似值。
-    """
-    values: List[float] = [float(r) for r in ratings]
-    return summarize_counts(count_ratings(values), len(values), sum(values))

@@ -28,32 +28,27 @@ const routes = [
       {
         path: 'dashboard',
         name: 'admin-dashboard',
-        component: () => import('@/views/admin/AdminDashboard.vue'),
-        meta: { requiresAuth: true, requiresAdmin: true }
+        component: () => import('@/views/admin/AdminDashboard.vue')
       },
       {
         path: 'users',
         name: 'admin-users',
-        component: () => import('@/views/admin/AdminUsers.vue'),
-        meta: { requiresAuth: true, requiresAdmin: true }
+        component: () => import('@/views/admin/AdminUsers.vue')
       },
       {
         path: 'movies',
         name: 'admin-movies',
-        component: () => import('@/views/admin/AdminMovies.vue'),
-        meta: { requiresAuth: true, requiresAdmin: true }
+        component: () => import('@/views/admin/AdminMovies.vue')
       },
       {
         path: 'ratings',
         name: 'admin-ratings',
-        component: () => import('@/views/admin/AdminRatings.vue'),
-        meta: { requiresAuth: true, requiresAdmin: true }
+        component: () => import('@/views/admin/AdminRatings.vue')
       },
       {
         path: 'models',
         name: 'admin-models',
-        component: () => import('@/views/admin/AdminModels.vue'),
-        meta: { requiresAuth: true, requiresAdmin: true }
+        component: () => import('@/views/admin/AdminModels.vue')
       }
     ]
   }

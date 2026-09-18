@@ -18,16 +18,10 @@
             @visible-change="dropdownVisible = $event"
           >
             <span class="username-dropdown">
-              {{ auth.user?.username }}
-              <el-icon
-                class="el-icon--right arrow-icon"
-                :class="{
-                  'rotate-cw': dropdownVisible && rotateDirection === 'clockwise',
-                  'rotate-ccw': dropdownVisible && rotateDirection === 'counterclockwise',
-                  'rotate-back-cw': !dropdownVisible && rotateDirection === 'counterclockwise',
-                  'rotate-back-ccw': !dropdownVisible && rotateDirection === 'clockwise'
-                }"
-              >
+              <!-- 头像与个人主页同一套：无头像图时显示昵称首字符；显示名一律用 displayName（昵称优先、回落账号） -->
+              <UserAvatar :src="auth.user?.avatar_url" :name="auth.displayName" :size="28" />
+              {{ auth.displayName }}
+              <el-icon class="el-icon--right arrow-icon" :class="{ 'is-open': dropdownVisible }">
                 <arrow-down />
               </el-icon>
             </span>
@@ -55,12 +49,13 @@
 </template>
 
 <script setup>
-import { ref, watch, computed } from 'vue'
+import { ref, computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowDown, User, SwitchButton } from '@element-plus/icons-vue'
 import ThemeSwitch from '@/components/ThemeSwitch.vue'
+import UserAvatar from '@/components/UserAvatar.vue'
 
 const auth   = useAuthStore()
 const router = useRouter()
@@ -68,14 +63,6 @@ const route  = useRoute()
 // 管理后台是全宽双栏布局，header 内容不再收进 1200px 容器，避免与侧栏错位
 const isAdminRoute = computed(() => route.path.startsWith('/admin'))
 const dropdownVisible = ref(false)
-const rotateDirection = ref('clockwise') // 'clockwise' 或 'counterclockwise'
-
-// 监听下拉菜单打开，随机决定旋转方向
-watch(dropdownVisible, (isVisible) => {
-  if (isVisible) {
-    rotateDirection.value = Math.random() > 0.5 ? 'clockwise' : 'counterclockwise'
-  }
-})
 
 function handleCommand(command) {
   switch (command) {
@@ -148,9 +135,9 @@ function handleLogout() {
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 8px 12px;
-  border-radius: 4px;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
   transition: background-color 0.2s;
 }
 
@@ -161,45 +148,11 @@ function handleLogout() {
 
 .username-dropdown .arrow-icon {
   transform-origin: center;
+  transition: transform 0.3s ease;
 }
 
-/* 展开：顺时针旋转 */
-.username-dropdown .arrow-icon.rotate-cw {
-  animation: rotateCW 0.3s ease forwards;
-}
-
-/* 展开：逆时针旋转 */
-.username-dropdown .arrow-icon.rotate-ccw {
-  animation: rotateCCW 0.3s ease forwards;
-}
-
-/* 收起：顺时针旋转回去（原来是逆时针展开的） */
-.username-dropdown .arrow-icon.rotate-back-cw {
-  animation: rotateBackCW 0.3s ease forwards;
-}
-
-/* 收起：逆时针旋转回去（原来是顺时针展开的） */
-.username-dropdown .arrow-icon.rotate-back-ccw {
-  animation: rotateBackCCW 0.3s ease forwards;
-}
-
-@keyframes rotateCW {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(180deg); }
-}
-
-@keyframes rotateCCW {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(-180deg); }
-}
-
-@keyframes rotateBackCW {
-  from { transform: rotate(-180deg); }
-  to { transform: rotate(0deg); }
-}
-
-@keyframes rotateBackCCW {
-  from { transform: rotate(180deg); }
-  to { transform: rotate(0deg); }
+/* 收起时箭头朝下，展开时翻转上来 */
+.username-dropdown .arrow-icon.is-open {
+  transform: rotate(180deg);
 }
 </style>

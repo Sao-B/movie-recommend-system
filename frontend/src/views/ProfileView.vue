@@ -3,51 +3,29 @@
     <!-- 用户信息卡片 -->
     <el-card class="user-info-card">
       <div class="user-info-content">
-        <!-- 头像：点一下选本地图片，选完立刻上传 -->
+        <!-- 头像：点一下打开选择面板（内置 SVG 头像 + 恢复默认） -->
         <div class="avatar-section">
-          <el-tooltip
-            content="点击更换头像"
-            placement="bottom"
-            :show-after="200"
-            :disabled="avatarUploading"
-          >
-            <div
-              class="avatar-clickable"
-              :class="{ 'is-uploading': avatarUploading }"
-              @click="openAvatarPicker"
-            >
-              <el-avatar :size="100" :src="userInfo.avatar_url" class="user-avatar">
-                <template #default>
-                  <span class="avatar-text">{{ userInfo.username?.charAt(0).toUpperCase() }}</span>
-                </template>
-              </el-avatar>
-              <div class="avatar-mask">
-                <el-icon><Camera /></el-icon>
-                <span>{{ avatarUploading ? '上传中…' : '更换头像' }}</span>
-              </div>
+          <div class="avatar-clickable" @click="openAvatarPicker">
+            <UserAvatar :src="userInfo.avatar_url" :name="displayName" :size="100" />
+            <div class="avatar-mask">
+              <el-icon><Camera /></el-icon>
+              <span>更换头像</span>
             </div>
-          </el-tooltip>
-          <!-- 真正的文件选择器，藏起来由头像代点 -->
-          <input
-            ref="avatarInputRef"
-            class="avatar-file-input"
-            type="file"
-            accept="image/png,image/jpeg,image/gif,image/webp"
-            @change="handleAvatarChange"
-          />
+          </div>
         </div>
 
         <div class="info-section">
-          <!-- 用户名：点击文本直接改，回车或「保存」落库 -->
-          <div v-if="editingField === 'username'" class="edit-block">
+          <!-- 昵称：点击文本直接改，回车或「保存」落库。账号是登录凭据（注册时按规则定下），
+               不在这里改，只在下面只读展示。 -->
+          <div v-if="editingField === 'nickname'" class="edit-block">
             <el-input
-              ref="usernameInputRef"
-              v-model="usernameDraft"
+              ref="nicknameInputRef"
+              v-model="nicknameDraft"
               size="large"
               maxlength="50"
               show-word-limit
-              placeholder="用户名"
-              @keyup.enter="saveUsername"
+              placeholder="昵称"
+              @keyup.enter="saveNickname"
               @keyup.esc="cancelEdit"
             />
             <div class="edit-block-actions">
@@ -55,32 +33,29 @@
               <el-button
                 size="small"
                 type="primary"
-                :loading="savingField === 'username'"
-                @click="saveUsername"
+                :loading="savingField === 'nickname'"
+                @click="saveNickname"
               >
                 保存
               </el-button>
             </div>
           </div>
-          <el-tooltip v-else content="点击编辑用户名" placement="top" :show-after="200">
-            <h2
-              class="username editable-text"
-              tabindex="0"
-              @click="startEdit('username')"
-              @keyup.enter="startEdit('username')"
-            >
-              {{ userInfo.username }}
-            </h2>
-          </el-tooltip>
+          <h2
+            v-else
+            class="username editable-text"
+            tabindex="0"
+            @click="startEdit('nickname')"
+            @keyup.enter="startEdit('nickname')"
+          >
+            {{ displayName }}
+          </h2>
 
           <div class="user-meta">
+            <span class="user-id">账号：{{ userInfo.username }}</span>
             <span class="user-id">ID: {{ userInfo.id }}</span>
-            <span v-if="userInfo.created_at" class="join-date">
-              注册于 {{ formatDate(userInfo.created_at) }}
-            </span>
           </div>
 
-          <!-- 个性签名：同用户名，点文本即改 -->
+          <!-- 个性签名：同昵称，点文本即改 -->
           <div v-if="editingField === 'bio'" class="edit-block">
             <el-input
               v-model="bioDraft"
@@ -103,20 +78,30 @@
               </el-button>
             </div>
           </div>
-          <el-tooltip v-else content="点击编辑个性签名" placement="top" :show-after="200">
-            <div
-              class="bio-line editable-text"
-              tabindex="0"
-              @click="startEdit('bio')"
-              @keyup.enter="startEdit('bio')"
-            >
-              <p v-if="userInfo.bio" class="bio">{{ userInfo.bio }}</p>
-              <p v-else class="bio-empty">这个人很懒，什么都没写</p>
-            </div>
-          </el-tooltip>
+          <div
+            v-else
+            class="bio-line editable-text"
+            tabindex="0"
+            @click="startEdit('bio')"
+            @keyup.enter="startEdit('bio')"
+          >
+            <p v-if="userInfo.bio" class="bio">{{ userInfo.bio }}</p>
+            <p v-else class="bio-empty">这个人很懒，什么都没写</p>
+          </div>
         </div>
       </div>
     </el-card>
+
+    <!-- 选头像：内置 SVG 头像网格 + 恢复默认，点哪个立刻保存并关窗 -->
+    <el-dialog v-model="avatarPickerVisible" title="选择头像" width="440px">
+      <AvatarPicker
+        :presets="presetAvatars"
+        :current="userInfo.avatar_url || ''"
+        :saving="avatarSaving"
+        @select="chooseAvatar"
+        @reset="chooseAvatar(null)"
+      />
+    </el-dialog>
 
     <el-card class="stats-card">
       <template #header>
@@ -166,18 +151,40 @@
           <el-empty v-else description="暂无数据" :image-size="60" />
         </div>
 
-        <div class="preference-section">
+        <div class="preference-section preference-section-wide">
           <h4>我的评分分布</h4>
-          <div v-if="hasRatings" class="distribution-chart">
-            <div v-for="(count, rating) in stats.rating_distribution" :key="rating" class="bar-item">
-              <span class="bar-label">{{ rating }}星</span>
-              <div class="bar-container">
-                <div class="bar" :style="{ width: getBarWidth(count) + '%' }"></div>
-                <span class="bar-count">{{ count }}</span>
+          <!-- 没有评分时用等高容器占位，避免这一块塌下去、页面跳动 -->
+          <div class="chart-area">
+            <div v-if="hasRatings" class="distribution-chart">
+              <div class="chart-y">
+                <span
+                  v-for="(tick, i) in yTicks"
+                  :key="i"
+                  :style="{ bottom: (tick / maxRatingCount) * 100 + '%' }"
+                >{{ tick }}</span>
+              </div>
+              <div class="chart-plot">
+                <span
+                  v-for="(tick, i) in yTicks"
+                  :key="'grid' + i"
+                  class="grid-line"
+                  :style="{ bottom: (tick / maxRatingCount) * 100 + '%' }"
+                ></span>
+                <div v-for="(count, rating) in stats.rating_distribution" :key="rating" class="bar-col">
+                  <span class="bar" :style="{ height: getBarHeight(count) + '%' }"></span>
+                  <span class="bar-count" :style="{ bottom: getBarHeight(count) + '%' }">{{ count }}</span>
+                </div>
+              </div>
+              <div class="chart-x">
+                <span
+                  v-for="(count, rating) in stats.rating_distribution"
+                  :key="'label' + rating"
+                  class="bar-label"
+                >{{ rating }}</span>
               </div>
             </div>
+            <el-empty v-else description="暂无评分数据" :image-size="60" />
           </div>
-          <el-empty v-else description="暂无评分数据" :image-size="60" />
         </div>
       </div>
     </el-card>
@@ -201,56 +208,49 @@
 
       <div v-else class="comment-list">
         <div v-for="item in comments.items" :key="item.comment_id" class="comment-item">
-          <!-- 编辑态：星级与正文一起改，点「保存」才落库。同一时刻只编辑一条 -->
-          <template v-if="editingId === item.comment_id">
-            <div class="edit-row">
-              <span class="movie-title">{{ item.title }}</span>
-              <el-rate v-model="draftRating" :max="5" allow-half show-score size="small" />
-            </div>
-            <el-input
+          <!-- 作者头像：这里列的全是自己的评论，所以头像就是自己的资料（有图用图，没有回落首字符） -->
+          <UserAvatar :src="userInfo.avatar_url" :name="displayName" :size="32" />
+
+          <div class="comment-body">
+            <!-- 编辑态：星级与正文一起改，点「保存」才落库。同一时刻只编辑一条 -->
+            <CommentEditForm
+              v-if="editingId === item.comment_id"
               v-model="draft"
-              type="textarea"
               :rows="3"
-              maxlength="500"
-              show-word-limit
               placeholder="修改你的评论"
-            />
-            <div class="edit-actions">
-              <el-button size="small" @click="cancelEditComment">取消</el-button>
-              <el-button
-                size="small"
-                type="primary"
-                :loading="saving"
-                :disabled="!draft.trim()"
-                @click="saveEdit(item)"
-              >
-                保存
-              </el-button>
-            </div>
-          </template>
+              :saving="saving"
+              @cancel="cancelEditComment"
+              @save="saveEdit(item)"
+            >
+              <div class="edit-row">
+                <span class="movie-title">{{ item.title }}</span>
+                <el-rate v-model="draftRating" :max="5" allow-half show-score size="small" />
+              </div>
+            </CommentEditForm>
 
-          <template v-else>
-            <div class="comment-head">
-              <router-link :to="`/movies/${item.movie_id}`" class="movie-title">
-                {{ item.title }}<span v-if="item.year" class="year"> ({{ item.year }})</span>
-              </router-link>
-              <!-- 评分与影评是一起发表的，星级直接挂在这张评论卡上（评分被单独删掉则不显示） -->
-              <span v-if="item.user_rating" class="comment-score">
-                <el-rate :model-value="item.user_rating" disabled allow-half size="small" />
-                <span class="score-value">{{ item.user_rating }}</span>
-              </span>
-            </div>
+            <template v-else>
+              <div class="comment-head">
+                <router-link :to="`/movies/${item.movie_id}`" class="movie-title">
+                  {{ item.title }}<span v-if="item.year" class="year"> ({{ item.year }})</span>
+                </router-link>
+                <!-- 评分与影评是一起发表的，星级直接挂在这张评论卡上（评分被单独删掉则不显示） -->
+                <span v-if="item.user_rating" class="comment-score">
+                  <el-rate :model-value="item.user_rating" disabled allow-half size="small" />
+                  <span class="score-value">{{ item.user_rating }}</span>
+                </span>
+              </div>
 
-            <div class="comment-text">{{ item.content }}</div>
+              <div class="comment-text">{{ item.content }}</div>
 
-            <div class="comment-foot">
-              <span class="comment-time">{{ formatTime(item.created_at) }}</span>
-              <el-button text type="primary" size="small" @click="startEditComment(item)">编辑</el-button>
-              <el-button text type="danger" size="small" @click="handleDeleteComment(item)">
-                删除
-              </el-button>
-            </div>
-          </template>
+              <div class="comment-foot">
+                <span class="comment-time">{{ formatTime(item.created_at) }}</span>
+                <el-button text type="primary" size="small" @click="startEditComment(item)">编辑</el-button>
+                <el-button text type="danger" size="small" @click="handleDeleteComment(item)">
+                  删除
+                </el-button>
+              </div>
+            </template>
+          </div>
         </div>
       </div>
 
@@ -270,7 +270,10 @@
 <script setup>
 import { ref, computed, nextTick, onMounted } from 'vue'
 import { Camera } from '@element-plus/icons-vue'
-import { getUserInfo, updateUserInfo, uploadAvatar, getUserStats, getUserComments } from '@/api/profile'
+import UserAvatar from '@/components/UserAvatar.vue'
+import AvatarPicker from '@/components/AvatarPicker.vue'
+import CommentEditForm from '@/components/CommentEditForm.vue'
+import { getUserInfo, updateUserInfo, getPresetAvatars, getUserStats, getUserComments } from '@/api/profile'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiComments } from '@/api/comments'
 import { apiRatings } from '@/api/ratings'
@@ -279,26 +282,31 @@ import { formatRelative as formatTime } from '@/utils/format'
 
 const auth = useAuthStore()
 
-// 用户基本信息
+// 用户基本信息（nickname 为空时显示回落账号，见 displayName）
 const userInfo = ref({
   id: null,
   username: '',
+  nickname: '',
   avatar_url: '',
   bio: '',
   created_at: ''
 })
 
+// 页面上显示的名字：昵称优先、回落账号，与后端 User.display_name 同一口径
+const displayName = computed(() => userInfo.value.nickname || userInfo.value.username)
+
 // 「点击即改」的两个字段：同一时刻只开一个编辑区
-// username → 用户名输入框；bio → 签名文本域；null → 全部是只读文本
+// nickname → 昵称输入框；bio → 签名文本域；null → 全部是只读文本
 const editingField  = ref(null)
 const savingField   = ref('')
-const usernameDraft = ref('')
+const nicknameDraft = ref('')
 const bioDraft      = ref('')
-const usernameInputRef = ref(null)
+const nicknameInputRef = ref(null)
 
-// 头像上传
-const avatarInputRef  = ref(null)
-const avatarUploading = ref(false)
+// 头像：内置 SVG 头像清单 + 选择面板的开关/保存态
+const avatarPickerVisible = ref(false)
+const presetAvatars       = ref([])
+const avatarSaving        = ref(false)
 
 const loading = ref(true)
 const stats = ref({
@@ -326,14 +334,14 @@ const draft = ref('')
 const draftRating = ref(0)
 const saving = ref(false)
 
-// ---------- 用户资料：点击文本直接编辑 ----------
+// ---------- 用户资料：点击文本直接编辑（昵称 / 签名；账号不可改） ----------
 
 function startEdit(field) {
   if (savingField.value) return
   editingField.value = field
-  if (field === 'username') {
-    usernameDraft.value = userInfo.value.username || ''
-    nextTick(() => usernameInputRef.value?.focus())
+  if (field === 'nickname') {
+    nicknameDraft.value = userInfo.value.nickname || userInfo.value.username || ''
+    nextTick(() => nicknameInputRef.value?.focus())
   } else {
     bioDraft.value = userInfo.value.bio || ''
   }
@@ -341,31 +349,27 @@ function startEdit(field) {
 
 function cancelEdit() {
   editingField.value = null
-  usernameDraft.value = ''
+  nicknameDraft.value = ''
   bioDraft.value = ''
 }
 
-async function saveUsername() {
-  const username = usernameDraft.value.trim()
-  if (!username) {
-    ElMessage.warning('用户名不能为空')
-    return
-  }
-  // 没改动就别白跑一次请求（后端也会因为重名把自己判成冲突）
-  if (username === userInfo.value.username) {
+async function saveNickname() {
+  const nickname = nicknameDraft.value.trim()
+  // 空昵称是合法的：后端存 NULL，显示回落账号
+  if (nickname === (userInfo.value.nickname || '')) {
     cancelEdit()
     return
   }
 
-  savingField.value = 'username'
+  savingField.value = 'nickname'
   try {
-    const updated = await updateUserInfo({ username })
+    const updated = await updateUserInfo({ nickname })
     userInfo.value = updated
-    auth.updateUser({ username: updated.username })  // header 里的显示名跟着变
-    ElMessage.success('用户名已更新')
+    auth.updateUser({ nickname: updated.nickname })  // header 里的显示名跟着变
+    ElMessage.success('昵称已更新')
     cancelEdit()
   } catch {
-    // 错误提示由 axios 拦截器统一弹出（重名、超长都在这里返回 400）
+    // 错误提示由 axios 拦截器统一弹出（超长在这里返回 400）
   } finally {
     savingField.value = ''
   }
@@ -391,40 +395,43 @@ async function saveBio() {
   }
 }
 
-// ---------- 头像：点头像选文件并上传 ----------
+// ---------- 头像：内置 SVG 头像，点一下选中即保存 ----------
 
 function openAvatarPicker() {
-  if (avatarUploading.value) return
-  avatarInputRef.value?.click()
+  loadPresetAvatars()
+  avatarPickerVisible.value = true
 }
 
-async function handleAvatarChange(event) {
-  const input = event.target
-  const file = input.files && input.files[0]
-  // 先清空 value，否则连着选同一个文件不会再触发 change
-  input.value = ''
-  if (!file) return
-
-  // 前端先挡一道，省一次白跑的请求；后端同样会校验扩展名、文件头与大小
-  if (!file.type.startsWith('image/')) {
-    ElMessage.warning('请选择图片文件')
-    return
-  }
-  if (file.size > 2 * 1024 * 1024) {
-    ElMessage.warning('图片不能超过 2MB')
-    return
-  }
-
-  avatarUploading.value = true
+async function loadPresetAvatars() {
+  // 清单是静态的，只在没拿到时请求一次；失败静默（面板会空着，不打断页面）
+  if (presetAvatars.value.length) return
   try {
-    const updated = await uploadAvatar(file)
+    presetAvatars.value = await getPresetAvatars()
+  } catch {}
+}
+
+/**
+ * 选中一个内置头像（url 为字符串）或恢复默认（url 为 null）。
+ * 后端只接受内置清单里的地址或 null，其它值会 400。
+ */
+async function chooseAvatar(url) {
+  if (avatarSaving.value) return
+  if ((url || '') === (userInfo.value.avatar_url || '')) {
+    avatarPickerVisible.value = false
+    return
+  }
+
+  avatarSaving.value = true
+  try {
+    const updated = await updateUserInfo({ avatar_url: url })
     userInfo.value = updated
-    auth.updateUser({ avatar_url: updated.avatar_url })
-    ElMessage.success('头像已更新')
+    auth.updateUser({ avatar_url: updated.avatar_url })  // 顶栏头像跟着变
+    avatarPickerVisible.value = false
+    ElMessage.success(url ? '头像已更新' : '已恢复默认头像')
   } catch {
     // 错误提示由 axios 拦截器统一弹出
   } finally {
-    avatarUploading.value = false
+    avatarSaving.value = false
   }
 }
 
@@ -451,20 +458,16 @@ const maxRatingCount = computed(() => {
   return Math.max(...Object.values(stats.value.rating_distribution), 1)
 })
 
-function getBarWidth(count) {
+// 纵轴刻度：0 到最高的那一档，最多 5 条；数据少时去重，避免刻度重复
+const yTicks = computed(() => {
+  const max = maxRatingCount.value
+  return [...new Set([0, 1, 2, 3, 4].map((i) => Math.round((max * i) / 4)))]
+})
+
+function getBarHeight(count) {
   return (count / maxRatingCount.value) * 100
 }
 
-function formatDate(isoString) {
-  const date = new Date(isoString)
-  const options = {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
-  }
-  return date.toLocaleDateString('zh-CN', options)
-}
 
 async function loadUserInfo() {
   try {
@@ -611,21 +614,8 @@ onMounted(async () => {
 
 .avatar-clickable:hover .avatar-mask { opacity: 1; }
 
-/* 上传中常显遮罩，顺带挡住重复点击 */
-.avatar-clickable.is-uploading { cursor: default; }
-.avatar-clickable.is-uploading .avatar-mask { opacity: 1; }
-
-/* 文件选择器由头像代点，本体不出现 */
-.avatar-file-input { display: none; }
-
 .user-avatar {
   border: 3px solid var(--app-border-light);
-}
-
-.avatar-text {
-  font-size: 36px;
-  font-weight: bold;
-  color: #409eff;
 }
 
 .info-section {
@@ -735,9 +725,22 @@ onMounted(async () => {
   color: var(--app-text-secondary);
 }
 
+/* 类型 / 导演各占一半、分散到整行两端（固定两列，免得宽屏下挤出空的第三列）；
+   评分分布独占一整行，图撑满该行 */
 .preferences {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 24px;
+}
+
+@media (max-width: 760px) {
+  .preferences {
+    grid-template-columns: 1fr;
+  }
+}
+
+.preference-section-wide {
+  grid-column: 1 / -1;
 }
 
 .preference-section h4 {
@@ -752,43 +755,103 @@ onMounted(async () => {
   gap: 8px;
 }
 
+/* 十档并排的柱 + 纵轴 + 水平网格线；柱高 = 条数 / 最多的那一档。
+   撑满「评分分布」那一行：10 列等宽、柱子占列宽 60%，左右不留大片空白 */
 .distribution-chart {
+  /* 父层是 flex 居中容器，没有这行 width 的话本块会收缩到内容宽度（图会缩成一小条居中） */
+  width: 90%;
   display: grid;
-  gap: 8px;
+  grid-template-columns: 30px 1fr;
+  column-gap: 10px;
 }
 
-.bar-item {
-  display: grid;
-  grid-template-columns: 60px 1fr;
+/* 图与「暂无评分数据」共用这一层：没数据时也把同样的高度占住，页面不跳 */
+.chart-area {
+  min-height: 300px;
+  display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: center;
 }
 
-.bar-label {
-  font-size: 14px;
-  color: var(--app-text-secondary);
+.chart-y {
+  grid-column: 1;
+  grid-row: 1;
+  position: relative;
+  height: 300px;
+  font-size: 12px;
+  color: var(--app-text-muted);
   text-align: right;
 }
 
-.bar-container {
+.chart-y span {
+  position: absolute;
+  right: 0;
+  transform: translateY(50%);
+}
+
+.chart-plot {
+  grid-column: 2;
+  grid-row: 1;
   position: relative;
-  display: flex;
-  align-items: center;
+  height: 300px;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
   gap: 8px;
+  border-left: 1px solid var(--app-border-light);
+  border-bottom: 1px solid var(--app-border-light);
+}
+
+.grid-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px dashed var(--app-border-light);
+}
+
+.bar-col {
+  position: relative;
+  height: 100%;
 }
 
 .bar {
-  height: 24px;
-  background: linear-gradient(90deg, #409eff, #79bbff);
-  border-radius: 4px;
-  transition: width 0.3s ease;
-  min-width: 2px;
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 60%;
+  max-width: 64px;
+  background: linear-gradient(180deg, #79bbff, #409eff);
+  border-radius: 3px 3px 0 0;
+  transition: height 0.3s ease;
+  min-height: 2px;
 }
 
 .bar-count {
-  font-size: 14px;
-  color: var(--app-text-secondary);
-  min-width: 30px;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 4px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--app-text-muted);
+}
+
+.chart-x {
+  grid-column: 2;
+  grid-row: 2;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.bar-label {
+  font-size: 12px;
+  color: var(--app-text-muted);
+  text-align: center;
+  white-space: nowrap;
 }
 
 /* 这一块原来写死 background:white，夜间模式下是块白斑，现改为跟随主题的表面色 */
@@ -820,11 +883,20 @@ onMounted(async () => {
   gap: 12px;
 }
 
-/* 与详情页的评论卡同一套观感：浅填充底 + 圆角，颜色全部走主题变量 */
+/* 与详情页的评论卡同一套观感：浅填充底 + 圆角，颜色全部走主题变量。
+   左侧作者头像 + 右侧内容两栏；min-width: 0 让长正文能正常换行、不把卡片撑破 */
 .comment-item {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
   padding: 16px;
   background: var(--app-fill);
   border-radius: 8px;
+}
+
+.comment-body {
+  flex: 1;
+  min-width: 0;
 }
 
 .comment-head {
@@ -879,13 +951,6 @@ onMounted(async () => {
   gap: 12px;
   flex-wrap: wrap;
   margin-bottom: 10px;
-}
-
-.edit-actions {
-  margin-top: 10px;
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
 }
 
 .comment-foot {

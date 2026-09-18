@@ -55,6 +55,9 @@ logs/
 poster_fetch_progress.txt
 fetch_posters_progress.txt
 
+# 本机测试/审计报告（方法学试验产物，不入库）
+docs/online-recommendation-audit.md
+
 # MySQL
 *.sql.bak
 

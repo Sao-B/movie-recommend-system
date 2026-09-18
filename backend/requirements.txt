@@ -11,3 +11,5 @@ Werkzeug==3.0.3
 PyYAML==6.0.1
 numpy==1.26.4
 scipy==1.13.1
+# scripts/build_ratings_clean.py 聚合 ratings.csv 用（与 spark/requirements.txt 同版本）
+pandas==2.2.2

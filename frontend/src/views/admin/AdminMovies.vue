@@ -7,8 +7,8 @@
     </template>
 
     <el-form class="search-bar" :inline="true">
-      <el-form-item label="标题">
-        <el-input v-model="filters.title" placeholder="支持模糊搜索" clearable style="width: 220px" @clear="handleSearch" @keyup.enter="handleSearch" />
+      <el-form-item label="关键词">
+        <el-input v-model="filters.keyword" placeholder="片名 / 简介 / ID" clearable style="width: 220px" @clear="handleSearch" @keyup.enter="handleSearch" />
       </el-form-item>
       <el-form-item label="类型">
         <el-select v-model="filters.genres" placeholder="全部类型" clearable filterable style="width: 150px" @change="handleSearch">
@@ -88,15 +88,26 @@
 import { reactive, ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiAdmin } from '@/api/admin'
+import { useTableQuery } from '@/composables/useTableQuery'
 
-const loading = ref(false)
-const movies = ref([])
-const total = ref(0)
-const page = ref(1)
-const pageSize = ref(20)
-const filters = reactive({ title: '', genres: '', year: '' })
-const sortProp = ref('')
-const sortOrder = ref('')
+const filters = reactive({ keyword: '', genres: '', year: '' })
+
+// 分页 / 排序 / 加载骨架见 composables/useTableQuery.js
+const {
+  loading, rows: movies, total, page, pageSize,
+  load: loadMovies, search: handleSearch, handleSortChange, reloadAfterDelete,
+} = useTableQuery(async ({ page, pageSize, sortProp, sortOrder }) => {
+  // 后端分页参数叫 per_page，搜索词叫 q（片名 / ID / 简介 三选一命中）
+  const data = await apiAdmin.listMovies({
+    page,
+    per_page: pageSize,
+    q: filters.keyword,
+    genres: filters.genres,
+    year: filters.year || undefined,
+    ...(sortProp ? { sort: sortProp, order: sortOrder } : {}),
+  })
+  return { rows: data.movies, total: data.total }
+})
 
 // MovieLens 的 19 种标准类型；数据库里的 genres 就是竖线拼接的这套词
 const GENRES = [
@@ -120,44 +131,8 @@ function joinGenres(genres) {
   return Array.isArray(genres) ? genres.join(' / ') : genres || '-'
 }
 
-async function loadMovies() {
-  loading.value = true
-  try {
-    // 后端分页参数叫 per_page，标题关键词叫 q
-    const data = await apiAdmin.listMovies({
-      page: page.value,
-      per_page: pageSize.value,
-      q: filters.title,
-      genres: filters.genres,
-      year: filters.year || undefined,
-      ...(sortProp.value ? { sort: sortProp.value, order: sortOrder.value } : {})
-    })
-    movies.value = data.movies
-    total.value = data.total
-  } finally {
-    loading.value = false
-  }
-}
-
-function handleSearch() {
-  page.value = 1
-  loadMovies()
-}
-
-// 表头点击切换排序；order 为空表示取消排序，回到默认
-function handleSortChange({ prop, order }) {
-  if (order) {
-    sortProp.value = prop
-    sortOrder.value = order === 'ascending' ? 'asc' : 'desc'
-  } else {
-    sortProp.value = ''
-    sortOrder.value = ''
-  }
-  handleSearch()
-}
-
 function handleReset() {
-  filters.title = ''
+  filters.keyword = ''
   filters.genres = ''
   filters.year = ''
   handleSearch()
@@ -196,9 +171,7 @@ async function handleDelete(row) {
 
   await apiAdmin.deleteMovie(row.movie_id)
   ElMessage.success('已删除')
-  const lastPage = Math.max(1, Math.ceil((total.value - 1) / pageSize.value))
-  if (page.value > lastPage) page.value = lastPage
-  loadMovies()
+  reloadAfterDelete()
 }
 
 onMounted(loadMovies)

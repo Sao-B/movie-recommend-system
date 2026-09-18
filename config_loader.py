@@ -3,7 +3,7 @@
 """项目根目录 config.yaml 的统一读取入口。
 
 工具脚本的一切凭据都必须从这里取，禁止硬编码。
-config.yaml 已在 .gitignore / .aiignore 中，不会进入版本库，也不会进 AI 上下文。
+config.yaml 含真实凭据、只在本机留存（已进 .gitignore），不会进入版本库。
 
 用法::
 
@@ -77,7 +77,7 @@ def tmdb_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
 
 
 def vm_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
-    """返回虚拟机 SSH 与虚拟机内 MySQL 的连接参数（sync_movie_stats.py 用）。"""
+    """返回虚拟机 SSH 与虚拟机内 MySQL 的连接参数（scripts/sync_code_to_vm.py 用）。"""
     config = config or load_config()
     v = _require(
         config,

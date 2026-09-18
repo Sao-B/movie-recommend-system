@@ -64,53 +64,28 @@
 </template>
 
 <script setup>
-import { reactive, ref, onMounted } from 'vue'
+import { reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiAdmin } from '@/api/admin'
 import { formatDateTime } from '@/utils/format'
+import { useTableQuery } from '@/composables/useTableQuery'
 
-const loading = ref(false)
-const ratings = ref([])
-const total = ref(0)
-const page = ref(1)
-const pageSize = ref(20)
 const filters = reactive({ user_id: '', movie_id: '' })
-const sortProp = ref('')
-const sortOrder = ref('')
 
-async function loadRatings() {
-  loading.value = true
-  try {
-    const data = await apiAdmin.listRatings({
-      page: page.value,
-      per_page: pageSize.value,
-      user_id: filters.user_id || undefined,
-      movie_id: filters.movie_id || undefined,
-      ...(sortProp.value ? { sort: sortProp.value, order: sortOrder.value } : {})
-    })
-    ratings.value = data.ratings
-    total.value = data.total
-  } finally {
-    loading.value = false
-  }
-}
-
-// 表头点击切换排序；order 为空表示取消排序，回到默认
-function handleSortChange({ prop, order }) {
-  if (order) {
-    sortProp.value = prop
-    sortOrder.value = order === 'ascending' ? 'asc' : 'desc'
-  } else {
-    sortProp.value = ''
-    sortOrder.value = ''
-  }
-  handleSearch()
-}
-
-function handleSearch() {
-  page.value = 1
-  loadRatings()
-}
+// 分页 / 排序 / 加载骨架见 composables/useTableQuery.js
+const {
+  loading, rows: ratings, total, page, pageSize,
+  load: loadRatings, search: handleSearch, handleSortChange, reloadAfterDelete,
+} = useTableQuery(async ({ page, pageSize, sortProp, sortOrder }) => {
+  const data = await apiAdmin.listRatings({
+    page,
+    per_page: pageSize,
+    user_id: filters.user_id || undefined,
+    movie_id: filters.movie_id || undefined,
+    ...(sortProp ? { sort: sortProp, order: sortOrder } : {}),
+  })
+  return { rows: data.ratings, total: data.total }
+})
 
 function handleReset() {
   filters.user_id = ''
@@ -131,9 +106,7 @@ async function handleDelete(row) {
 
   await apiAdmin.deleteRating(row.id)
   ElMessage.success('已删除')
-  const lastPage = Math.max(1, Math.ceil((total.value - 1) / pageSize.value))
-  if (page.value > lastPage) page.value = lastPage
-  loadRatings()
+  reloadAfterDelete()
 }
 
 onMounted(loadRatings)

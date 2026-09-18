@@ -1,13 +1,23 @@
 #!/usr/bin/env python3
 """检查 MySQL 中各表的数据量。凭据统一从 config.yaml 读取。
 
+用法::
+
+    python scripts/check_db.py
+
 说明：
-- 评分以 `user_ratings` 为唯一事实来源；legacy `ratings` 仅保留只读，只作对照。
+- 评分以 `user_ratings` 为唯一事实来源；legacy `ratings` 表已由 migrations/008 删除。
 - MovieLens 原始评分不在 MySQL，存放在 HDFS 的 ratings.csv。
 """
+import os
+import sys
+
 import pymysql
 
-from config_loader import mysql_kwargs
+# 本文件在 scripts/ 下，config_loader 在项目根目录
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from config_loader import mysql_kwargs  # noqa: E402
 
 conn = pymysql.connect(**mysql_kwargs())
 
@@ -18,7 +28,6 @@ queries = [
     ("系统用户数", "SELECT COUNT(*) FROM users"),
     ("电影总数", "SELECT COUNT(*) FROM movies"),
     ("系统用户评分数", "SELECT COUNT(*) FROM user_ratings"),
-    ("评分数 (legacy ratings，只读)", "SELECT COUNT(*) FROM ratings"),
     ("评论数", "SELECT COUNT(*) FROM movie_comments"),
     ("推荐条数", "SELECT COUNT(*) FROM recommendations"),
     ("有推荐的用户数", "SELECT COUNT(DISTINCT user_id) FROM recommendations"),

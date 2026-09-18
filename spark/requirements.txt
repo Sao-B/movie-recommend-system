@@ -2,10 +2,9 @@
 # 安装命令：pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 #
 # 注意：pyspark 本身已包含 Spark，若已有独立 Spark 集群则无需在 requirements 中安装
-# PyMySQL 用于通过 JDBC 将推荐结果写入 MySQL
+# 读写 MySQL 走 Spark JDBC；PyMySQL 只供 utils/mysql_utils.py 执行模型版本生命周期 SQL
 
 pyspark==3.5.1
-pandas==2.2.2
 numpy==1.26.4
 PyMySQL==1.1.1
 PyYAML==6.0.1

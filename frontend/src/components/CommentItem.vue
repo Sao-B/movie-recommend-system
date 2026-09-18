@@ -1,8 +1,10 @@
 <template>
   <div class="comment-item" :class="{ pinned, locked: editLocked }">
     <div class="comment-header">
+      <!-- 作者头像：有图用图，没有就回落成显示名首字符（与顶栏、个人主页同一个组件） -->
+      <UserAvatar :src="comment.avatar_url" :name="authorName" :size="36" />
       <div class="user-info">
-        <span class="username">{{ comment.username }}</span>
+        <span class="username">{{ authorName }}</span>
         <el-tag v-if="pinned" size="small" type="warning" effect="plain">我的影评</el-tag>
         <el-tag v-if="isHidden" size="small" type="info" effect="plain">仅自己可见</el-tag>
         <!-- 展示态的星级只读（取列表接口返回的 user_rating），谁都不能直接点着改：
@@ -19,9 +21,18 @@
     </div>
 
     <!-- 编辑态：正文与评分都在这里改，点「保存」才一起提交 -->
-    <div v-if="editing" class="edit-area">
+    <CommentEditForm
+      v-if="editing"
+      v-model="draft"
+      class="edit-area"
+      :rows="4"
+      placeholder="修改你的影评"
+      :saving="saving"
+      @cancel="onCancel"
+      @save="saveEdit"
+    >
       <div class="edit-rate-row">
-        <span class="rate-user">{{ comment.username }}</span>
+        <span class="rate-user">{{ authorName }}</span>
         <el-rate
           :model-value="draftRating"
           @update:model-value="draftRating = $event"
@@ -31,27 +42,7 @@
           size="small"
         />
       </div>
-      <el-input
-        v-model="draft"
-        type="textarea"
-        :rows="4"
-        placeholder="修改你的影评"
-        maxlength="500"
-        show-word-limit
-      />
-      <div class="edit-actions">
-        <el-button size="small" :disabled="saving" @click="onCancel">取消</el-button>
-        <el-button
-          size="small"
-          type="primary"
-          :loading="saving"
-          :disabled="!draft.trim()"
-          @click="saveEdit"
-        >
-          保存
-        </el-button>
-      </div>
-    </div>
+    </CommentEditForm>
 
     <template v-else>
       <div class="comment-content">{{ comment.content }}</div>
@@ -95,6 +86,8 @@ import { useAuthStore } from '@/stores/auth'
 import { apiComments } from '@/api/comments'
 import { apiRatings } from '@/api/ratings'
 import { formatRelative as formatTime } from '@/utils/format'
+import CommentEditForm from '@/components/CommentEditForm.vue'
+import UserAvatar from '@/components/UserAvatar.vue'
 
 const props = defineProps({
   comment: { type: Object, required: true },
@@ -120,6 +113,9 @@ const draftRating = ref(0)
 const saving = ref(false)
 
 const isMine = computed(() => auth.user?.id === props.comment.user_id)
+
+// 署名用昵称（后端 display_name = 昵称 or 账号）；老接口响应里没有这个字段时回落账号
+const authorName = computed(() => props.comment.display_name || props.comment.username || '')
 
 // 别处正在编辑时，本卡片上所有操作（编辑、删除）一起禁用，并给出同一句悬停说明
 const lockTitle = computed(() =>
@@ -307,6 +303,7 @@ async function remove() {
 .comment-header {
   display: flex;
   align-items: center;
+  gap: 10px;
   margin-bottom: 8px;
 }
 
@@ -351,7 +348,7 @@ async function remove() {
   margin-left: auto;
 }
 
-/* 编辑区：用户名 + 可点的星星在上，正文框在下 */
+/* 编辑区：署名（昵称优先、回落账号）+ 可点的星星在上，正文框在下 */
 .edit-rate-row {
   display: flex;
   align-items: center;
@@ -362,12 +359,5 @@ async function remove() {
 .rate-user {
   font-weight: 600;
   color: var(--app-text);
-}
-
-.edit-actions {
-  margin-top: 10px;
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
 }
 </style>

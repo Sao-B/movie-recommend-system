@@ -23,6 +23,7 @@ from app import create_app                                      # noqa: E402
 from app.db import db                                           # noqa: E402
 from app.models import User                                     # noqa: E402
 from app.routes.profile import AVATAR_URL_PREFIX                 # noqa: E402
+from app.routes.profile import PRESET_AVATAR_URL_PREFIX          # noqa: E402
 from tests.sqlite_support import sqlite_integer_pk_patch         # noqa: E402
 
 # 1x1 透明 PNG，带真实文件头，用来过魔数校验
@@ -172,6 +173,86 @@ class ProfileAvatarTests(unittest.TestCase):
     def test_missing_file_returns_404_not_500(self):
         response = self.client.get(AVATAR_URL_PREFIX + f"avatar_{self.user_id}_" + "f" * 32 + ".png")
         self.assertEqual(response.status_code, 404)
+
+    # ---------- 内置 SVG 头像（界面上的换头像入口） ----------
+
+    def test_preset_list_is_public_and_well_formed(self):
+        response = self.client.get("/api/profile/avatars")   # 不带 token
+        self.assertEqual(response.status_code, 200)
+
+        presets = response.get_json()
+        self.assertGreaterEqual(len(presets), 6)
+        for preset in presets:
+            with self.subTest(preset=preset):
+                self.assertTrue(preset["id"])
+                self.assertTrue(preset["name"])
+                self.assertTrue(preset["url"].startswith(PRESET_AVATAR_URL_PREFIX))
+                self.assertTrue(preset["url"].endswith(".svg"))
+
+    def test_every_preset_in_the_list_has_a_real_file(self):
+        """清单是代码里的常量，最容易出的错是「加了名字忘了放文件」——所以逐个取回来验。"""
+        presets = self.client.get("/api/profile/avatars").get_json()
+        for preset in presets:
+            with self.subTest(url=preset["url"]):
+                response = self.client.get(preset["url"])
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.headers["Content-Type"].startswith("image/svg+xml"))
+                self.assertTrue(response.data.startswith(b"<svg"))
+                response.close()
+
+    def test_preset_route_rejects_unknown_or_traversal_names(self):
+        for name in ("../config.yaml", "film.txt", "Film.svg", "nope.svg", "film.svg.bak"):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    self.client.get(PRESET_AVATAR_URL_PREFIX + name).status_code, 404
+                )
+
+    def test_put_accepts_preset_url_and_reset(self):
+        preset_url = self.client.get("/api/profile/avatars").get_json()[0]["url"]
+
+        response = self.client.put(
+            "/api/profile/info", json={"avatar_url": preset_url}, headers=self.headers
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["avatar_url"], preset_url)
+
+        # 恢复默认：置空，前端回落显示名首字符
+        response = self.client.put(
+            "/api/profile/info", json={"avatar_url": None}, headers=self.headers
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.get_json()["avatar_url"])
+
+    def test_put_rejects_avatars_outside_the_preset_list(self):
+        for value in (
+            "https://example.com/evil.png",                        # 外链
+            AVATAR_URL_PREFIX + f"avatar_{self.user_id}_" + "f" * 32 + ".png",  # 上传路径
+            "/api/profile/avatars/../../config.yaml",               # 想穿出去
+        ):
+            with self.subTest(value=value):
+                response = self.client.put(
+                    "/api/profile/info", json={"avatar_url": value}, headers=self.headers
+                )
+                self.assertEqual(response.status_code, 400)
+
+    def test_switching_to_preset_deletes_the_uploaded_file(self):
+        """换成内置头像后，历史上传的那张图不再被引用，磁盘上不该留孤儿文件。"""
+        uploaded = self._upload().get_json()["avatar_url"]
+        uploaded_file = self.upload_dir / self._filename_of(uploaded)
+        self.assertTrue(uploaded_file.exists())
+
+        preset_url = self.client.get("/api/profile/avatars").get_json()[0]["url"]
+        self.client.put("/api/profile/info", json={"avatar_url": preset_url}, headers=self.headers)
+
+        self.assertFalse(uploaded_file.exists())
+
+    def test_reset_also_deletes_the_uploaded_file(self):
+        uploaded = self._upload().get_json()["avatar_url"]
+        uploaded_file = self.upload_dir / self._filename_of(uploaded)
+
+        self.client.put("/api/profile/info", json={"avatar_url": None}, headers=self.headers)
+
+        self.assertFalse(uploaded_file.exists())
 
 
 if __name__ == "__main__":

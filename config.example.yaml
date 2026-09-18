@@ -1,5 +1,5 @@
 # 复制本文件为 config.yaml，再把所有占位值替换为真实值。
-# config.yaml 已被 .gitignore / .aiignore 忽略：既不会进入版本库，也不会进入 AI 上下文。
+# config.yaml 已被 .gitignore 忽略：不会进入版本库，只在本机留存。
 # 所有代码与工具脚本都必须从这里读配置，禁止硬编码凭据。
 
 # Hadoop / HDFS
@@ -58,7 +58,7 @@ tmdb:
   base_url: "https://api.themoviedb.org/3"
   poster_base_url: "https://image.tmdb.org/t/p/w500"
 
-# 虚拟机（sync_movie_stats.py 从 VM 同步评分统计用；仅本地开发需要）
+# 虚拟机（scripts/sync_code_to_vm.py 同步代码到 VM 用；仅本地开发需要）
 vm:
   host: "192.168.10.102"
   ssh_user: "change_me"

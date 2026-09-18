@@ -2,6 +2,10 @@
 -- 迁移脚本 002: 创建 movie_comments 表
 -- 执行时间: 2024-01-XX
 -- 目的: 支持用户对电影发表评论
+--
+-- 注（2026-09-16）：本脚本建立的 idx_movie_created 与 fk_comments_* 已在
+-- migrations/009 中分别改名为 idx_movie_time 与 fk_comment_*（列与动作不变）。
+-- 此处保持历史原样不改。
 -- ============================================================
 
 USE movie_recommend;

@@ -500,7 +500,7 @@ node -v && npm -v
 4. **两类用户在同一个 ALS 模型中训练**，共享电影隐因子
 5. 推荐结果经半连接过滤后只保留系统用户，不会污染应用数据
 
-> 训练入口 `spark/utils/user_id_namespace.py` 的 `validate_user_id_namespace()` 在训练开始前校验系统用户 ID 为正整数，并打印两个命名空间的范围。
+> 训练入口在训练开始前打印两套 ID 的实际取值区间（系统用户 `[1, max_system_user_id]`、MovieLens 用户 `[-max_ml_user_id, -1]`）备查。取负方案本身在数域上保证隔离，不需要额外校验。
 
 #### 3.1.2 评分表统一（user_ratings 为唯一事实来源）
 
@@ -546,10 +546,11 @@ building → active → retired
 ```sql
 CREATE TABLE users (
   id            INT PRIMARY KEY AUTO_INCREMENT COMMENT '用户主键，自增正整数',
-  username      VARCHAR(50) UNIQUE NOT NULL    COMMENT '用户名，唯一',
+  username      VARCHAR(50) UNIQUE NOT NULL    COMMENT '账号，唯一；注册时按 app/account_rules.py 命名，登录可用它或 id（迁移 011 起与昵称分离）',
   password_hash VARCHAR(255) NOT NULL          COMMENT 'Werkzeug 哈希密码',
   avatar_url    VARCHAR(500) NULL              COMMENT '用户头像 URL（迁移 004 新增）',
   bio           TEXT NULL                      COMMENT '个人签名（迁移 004 新增）',
+  nickname      VARCHAR(50) NULL               COMMENT '昵称，展示用，任意字符、不唯一；为空时回落显示 username（迁移 011 新增）',
   created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '注册时间',
   role          ENUM('user','admin') NOT NULL DEFAULT 'user' COMMENT '角色（迁移 001_add_user_role 新增）'
 );
@@ -578,20 +579,29 @@ CREATE TABLE movies (
   title        VARCHAR(500) NOT NULL COMMENT '标题（含年份），如 "Toy Story (1995)"',
   genres       VARCHAR(500)         COMMENT '竖线分隔，如 "Action|Drama"',
   year         SMALLINT             COMMENT '从 title 正则解析',
-  -- MovieLens 统计列（import_movie_stats.py / sync_movie_stats.py 维护）
+  -- TMDB 富化列（fetch_posters.py 抓取；5 个 varchar(500) 与脚本的 cut(limit=500) 对齐）
+  poster_url   VARCHAR(500), overview TEXT, director VARCHAR(500),
+  writers      VARCHAR(500), `cast` TEXT, countries VARCHAR(500),
+  languages    VARCHAR(500), release_date DATE, runtime SMALLINT,
+  -- MovieLens 统计列（import_movie_stats.py 维护；
+  -- 由 migrations/001 追加，物理位置排在富化列之后）
   avg_rating   DECIMAL(3,2)         COMMENT 'MovieLens 平均评分',
   rating_count INT DEFAULT 0        COMMENT 'MovieLens 评分数',
-  -- TMDB 富化列（fetch_posters.py 抓取）
-  poster_url   VARCHAR(500), overview TEXT, director VARCHAR(500),
-  writers      TEXT, `cast` TEXT, countries VARCHAR(200),
-  languages    VARCHAR(200), release_date DATE, runtime SMALLINT
+  INDEX idx_genres (genres(100)),
+  INDEX idx_year (year),
+  INDEX idx_popularity (rating_count DESC, avg_rating DESC)  -- 热门排序：首页与电影库默认查询
 );
 ```
 
 **数据来源（三层）：**
 1. `spark/preprocess.py`：从 HDFS 清洗 `movies.csv` 写入（约 8.7 万部）
-2. `scripts/import_movie_stats.py` / 根目录 `sync_movie_stats.py`：从 MovieLens 统计 CSV / 虚拟机同步 `avg_rating`、`rating_count`
-3. 根目录 `fetch_posters.py`：按 TMDB API 逐一回填海报、简介、导演、主演等富化列
+2. `scripts/import_movie_stats.py`：从 `ratings_clean.csv` 回填 `avg_rating`、`rating_count`
+3. `scripts/fetch_posters.py`：按 TMDB API 逐一回填海报、简介、导演、主演等富化列。
+   取数顺序为 `tmdbId` 直查 `/movie` 优先，没拿到再走兜底级联（`imdbId` → `/find`、
+   `tmdbId` → `/movie`+`/tv` 严格校验、标题搜索带/不带年份、冒号标题退回前缀搜）。
+   进度不另存：缺 `poster_url` / `overview` / `director` 的行既是待办、也是上次没抓到的记录，
+   直接查库即可列出（脚本每次运行结束也会打印这条 SQL），可反复运行：
+   `SELECT movie_id, title, year FROM movies WHERE COALESCE(poster_url, '') = '' OR overview IS NULL OR director IS NULL;`
 
 > 凭据统一经根目录 `config_loader.py` 从 `config.yaml` 读取（`tmdb:` / `vm:` 段），脚本不含敏感信息。
 
@@ -804,14 +814,14 @@ CREATE TABLE movie_comments (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   edited_at  TIMESTAMP NULL DEFAULT NULL COMMENT '用户编辑正文的时间；从未编辑为 NULL（migrations/007）',
-  INDEX idx_movie_created (movie_id, created_at DESC),
+  INDEX idx_movie_time (movie_id, created_at DESC),
   INDEX idx_user (user_id)
 );
 ```
 
 **关联查询**：评论区展示时 LEFT JOIN `user_ratings` 取作者此刻的星级（没有评分行则不显示星星，同时把这条影评判为「仅自己可见」），见 `backend/app/routes/comments.py`。
 
-**展示态的星级一律只读，改评分要走「编辑 + 保存」**：`CommentItem.vue` 只用列表接口返回的 `comment.user_rating` 渲染用户名旁那颗星，展示态下它是 `disabled` 的——**谁都不能直接点着改**。点卡片上的「编辑」进入编辑态后，编辑区里另有一颗可点的星星，值先落在草稿 `draftRating` 上；点「保存」才按「先 `apiRatings.submit()`、再 `apiComments.update()`」落库，并 `emit('saved', editKey, ratingChanged)`。父组件收到后先收起编辑态、`reloadComments()`，评分也改了才再 `emit('rating-submitted')` 让详情页重拉统计——**不即时改**，界面上的星星与库里的记录始终一致。
+**展示态的星级一律只读，改评分要走「编辑 + 保存」**：`CommentItem.vue` 只用列表接口返回的 `comment.user_rating` 渲染署名（昵称优先、回落账号）旁那颗星，展示态下它是 `disabled` 的——**谁都不能直接点着改**。点卡片上的「编辑」进入编辑态后，编辑区里另有一颗可点的星星，值先落在草稿 `draftRating` 上；点「保存」才按「先 `apiRatings.submit()`、再 `apiComments.update()`」落库，并 `emit('saved', editKey, ratingChanged)`。父组件收到后先收起编辑态、`reloadComments()`，评分也改了才再 `emit('rating-submitted')` 让详情页重拉统计——**不即时改**，界面上的星星与库里的记录始终一致。
 
 **评分与影评成对发表（前端按钮 + 后端校验两道关）**：`canSubmit = myRating > 0 && newComment.trim()`，只有评分没写正文、或只写正文没打分，按钮都点不动，并在表单下方说明还差哪一半（`submitHint`）。`submitAll()` 因此固定为「先 `apiRatings.submit()`、再 `apiComments.create()`」——顺序不能反，因为 `create_comment` 会检查作者此刻有没有评分（`_star_rating(...) is None` → 400「请先给这部电影评分，评分和影评需要一起发表」），绕过前端直接发也留不下「没有评分的影评」。
 
@@ -872,7 +882,6 @@ mysql -u root -p < sql/schema.sql
 ```bash
 mysqldump -u root -p --single-transaction movie_recommend > backup.sql
 mysql -u root -p movie_recommend < sql/migrations/001_add_user_role.sql
-mysql -u root -p movie_recommend < sql/migrations/001_add_movie_metadata_fields.sql
 mysql -u root -p movie_recommend < sql/migrations/001_add_recommendation_model_tables.sql
 mysql -u root -p movie_recommend < sql/migrations/002_create_movie_comments_table.sql
 mysql -u root -p movie_recommend < sql/migrations/004_add_user_profile_fields.sql
@@ -880,6 +889,8 @@ mysql -u root -p movie_recommend < sql/migrations/005_merge_ratings_into_user_ra
 mysql -u root -p movie_recommend < sql/migrations/006_add_movie_rating_stats.sql
 mysql -u root -p movie_recommend < sql/migrations/007_add_comment_edited_at.sql
 mysql -u root -p movie_recommend < sql/migrations/008_drop_legacy_ratings.sql
+mysql -u root -p movie_recommend < sql/migrations/009_align_schema_drift.sql
+mysql -u root -p movie_recommend < sql/migrations/010_drop_redundant_indexes.sql
 ```
 
 > `006` 只建表不灌数据，建完必须跑 `scripts/build_ml_rating_stats.py`（约 40 秒），否则详情页「评分统计」里没有 MovieLens 的份，只剩本站评分。
@@ -888,7 +899,11 @@ mysql -u root -p movie_recommend < sql/migrations/008_drop_legacy_ratings.sql
 
 > `008` 删除 legacy `ratings` 表（数据已由 `005` 合并）。幂等，仅存量库需要；全新建库直接跑 `schema.sql` 即可。
 
-> `003_rename_ratings_table.sql` 已废弃（方向与整体设计相反），保留仅为说明历史，不需要执行。
+> `009` 把 2026-09-16 之前的旧库对齐到 `schema.sql`（加宽 3 个富化列到 `VARCHAR(500)`、`movies` 补 `idx_popularity` 并去掉冗余 `idx_rating_count`、去掉 `users` 冗余索引、统一索引与外键名、两个外键补 `ON DELETE CASCADE`）。不可重复执行；线上库已直接对齐，不需要执行。
+
+> `010` 删掉两处漏网的冗余索引（`user_ratings.idx_user`、`model_item_factors.idx_factor_version`，都被最左前缀覆盖）。不可重复执行，重跑报 1091；线上库已于 2026-09-17 执行。
+
+> `001_add_movie_metadata_fields.sql`（MariaDB 语法，MySQL 8 报错）与 `003_rename_ratings_table.sql`（重命名从未启用）已废弃并移入 [`archive/`](../archive/)，不要执行。
 
 验证：
 ```sql
@@ -976,21 +991,19 @@ SELECT * FROM movies WHERE year = 1995 LIMIT 5;
 
 脚本：[`scripts/build_ratings_clean.py`](../scripts/build_ratings_clean.py)
 
-对 `data/raw/ratings.csv`（3200 万条明细）按 movieId 做单遍流式聚合，产出
-`data/raw/ratings_clean.csv`（84,432 行 × 11 列：`rating_count` / `rating_mean` /
-`rating_median` / `rating_std` / 极值 / `rating_sum` / `rating_range` / 四分位数）：
+`pd.read_csv(usecols=["movieId", "rating"])` 后按 `movieId` 分组：`agg` 出条数 / 均值 /
+中位数 / 标准差 / 极值 / 求和，再派生 `rating_range` 并补 `quantile([.25, .75])`，共 11 列，
+写出 `data/raw/ratings_clean.csv`（84,432 行）：
 
 ```bash
-backend/venv/Scripts/python.exe scripts/build_ratings_clean.py --check   # 与现有产物逐单元格比对
-backend/venv/Scripts/python.exe scripts/build_ratings_clean.py --force   # 重新生成
+backend/venv/Scripts/python.exe scripts/build_ratings_clean.py --check   # 与现有产物逐格比对
 ```
 
-下游 [`scripts/import_movie_stats.py`](../scripts/import_movie_stats.py) 把
-`rating_mean` / `rating_count` 两列回填 `movies` 表，支撑首页热门榜的贝叶斯加权
-排序与电影卡片均分。它与详情页评分统计（`movie_rating_stats` 表，见 3.x 表说明与
-`build_ml_rating_stats.py`）**同源、行数一致**，但粒度不同：本文件只服务 `movies`
-两列回填，五档分布走 `build_ml_rating_stats.py`。注意单条评分的电影 `rating_std`
-为空（样本标准差无定义）。
+`--check` 用 `assert_frame_equal` 比对，差异直接打印到列名；单条评分的电影 `rating_std`
+为 NaN（写进 CSV 是空串）。下游
+[`scripts/import_movie_stats.py`](../scripts/import_movie_stats.py) 只取 `rating_mean` /
+`rating_count` 两列回填 `movies` 表，支撑首页热门榜排序与电影卡片均分；五档分布走
+`build_ml_rating_stats.py`，与本文件同源但粒度不同。
 
 ---
 
@@ -1003,7 +1016,7 @@ backend/venv/Scripts/python.exe scripts/build_ratings_clean.py --force   # 重�
 ```
  1. 读取 HDFS MovieLens 评分，userId cast 为 long
  2. 统计 MovieLens 最大用户 ID；查 MySQL users 表最大 ID
- 3. validate_user_id_namespace 校验命名空间隔离
+ 3. 打印两套用户 ID 的取值区间（取负方案天然隔离，只记录不校验）
  4. MovieLens userId 取负（-userId → int）
  5. JDBC 子查询读取 user_ratings，并与 users 半连接（只留真实系统用户）
  6. MovieLens 评分按 train_ratio=0.8 随机划分（seed=42）
@@ -1019,18 +1032,19 @@ backend/venv/Scripts/python.exe scripts/build_ratings_clean.py --force   # 重�
 
 任一步骤失败：retire 掉 building 版本，旧 active 模型不受影响。
 
-### 5.2 用户 ID 命名空间验证
+### 5.2 用户 ID 命名空间
 
 ```python
-from utils.user_id_namespace import validate_user_id_namespace
-
 # train_als.py 中：
 max_ml_user_id = ratings_ml_raw.agg(F.max("ml_user_id")).first()[0]   # 162541
 max_system_user_id = _read_max_system_user_id(spark, jdbc_url, mysql_cfg)  # SELECT MAX(id) FROM users
-validate_user_id_namespace(max_system_user_id, max_ml_user_id)
-# 输出：User ID namespace validated: system=[1, 6], MovieLens=[-162541, -1]
-# 系统用户 ID 为负时抛 ValueError
+print(f"User ID namespace: system=[1, {max_system_user_id}], "
+      f"MovieLens=[{-max_ml_user_id}, -1]")
+# 输出示例：User ID namespace: system=[1, 6], MovieLens=[-162541, -1]
 ```
+
+系统用户 ID 为正整数、MovieLens 用户 ID 取负，两套 ID 天然不相交，因此这里只记录区间备查，
+不再做多余的「校验」。
 
 ### 5.3 数据合并
 
@@ -1187,7 +1201,7 @@ $$p_u = \arg\min_{p_u \geq 0} \sum_{i \in I_u} (r_{ui} - p_u^T q_i)^2 + \lambda 
 ### 6.2 核心实现（`recommendation_core.py`，纯函数、可单测）
 
 ```python
-def solve_user_vector(item_factors, ratings, reg_param, nonnegative=True):
+def solve_user_vector(item_factors, ratings, reg_param):
     """固定电影因子，求解用户向量（带 L2 正则的增广最小二乘）"""
     factors = np.asarray(item_factors, dtype=float)
     values = np.asarray(ratings, dtype=float)
@@ -1240,7 +1254,7 @@ class OnlineRecommendationService:
         # 用户评分的电影必须全部存在于因子表，否则视为模型与数据不匹配 → 降级
         user_vector = solve_user_vector(
             np.asarray(rated_factors), np.asarray(rated_values),
-            reg_param=float(model.reg_param), nonnegative=True,
+            reg_param=float(model.reg_param),
         )
         ranked = rank_unrated_items(all_movie_ids, all_factors, user_vector,
                                     set(rated_movie_ids), self.top_n)
@@ -1292,15 +1306,19 @@ backend/
 ├── app.py                          # 入口：create_app(Config) + app.run
 ├── config.py                       # 从根目录 config.yaml 读配置（含 DB URI、CORS、ALS_TOP_N）
 ├── requirements.txt
+├── assets/avatars/                 # 内置 SVG 头像（10 个；清单是 routes/profile.py 的 PRESET_AVATARS）
+├── uploads/avatars/                # 历史上传的头像文件（界面不再上传，仅存量数据在用）
 └── app/
     ├── __init__.py                 # create_app：扩展初始化、服务单例、蓝图注册
     ├── db.py                       # SQLAlchemy 实例
     ├── models.py                   # User / Movie / UserRating / Recommendation /
     │                               # ModelVersion / ModelItemFactor / MovieComment
+    ├── account_rules.py            # 纯函数：账号命名规则（注册 / 后台建号共用）
     ├── rating_stats.py             # 评分档位规则（纯函数，离线聚合脚本复用）
     ├── recommendation_core.py      # 纯函数：NNLS 求解 + Top-N 排序
     ├── recommendation_service.py   # OnlineRecommendationService（缓存 + 降级）
     ├── recommendation_repository.py# 推荐数据仓储
+    ├── movie_search.py             # 纯函数：搜索词 → SQL 条件（ID318 精准查 ID / 片名 / 简介）
     └── routes/
         ├── auth.py                 # /api/auth/register /login
         ├── movies.py               # /api/movies 列表/详情/类型
@@ -1352,14 +1370,24 @@ def register():
     data = request.get_json(silent=True) or {}
     username = (data.get("username") or "").strip()
     password = (data.get("password") or "").strip()
-    # 校验：非空、用户名 ≤50、密码 6~128 位
+    # 校验：非空 → 账号命名规则（app/account_rules.py：3-20 位字母/数字/下划线/连字符）→ 密码 6~128 位
+    invalid = username_error(username)                 # 不合规时返回给用户看的文案
+    if invalid:
+        return jsonify({"msg": invalid}), 400
     if User.query.filter_by(username=username).first():
-        return jsonify({"msg": "用户名已存在"}), 409
-    user = User(username=username)
+        return jsonify({"msg": "账号已存在"}), 409
+    user = User(username=username, nickname=username)  # 昵称初始与账号同名，之后在个人主页改
     user.set_password(password)
     db.session.add(user); db.session.commit()
     token = create_access_token(identity=str(user.id))   # identity 必须 str
     return jsonify({"token": token, "user": user.to_dict()}), 201
+
+@auth_bp.post("/login")
+def login():
+    identifier = (request.get_json(silent=True) or {}).get("username", "").strip()
+    # 同一字段既收账号也收用户 ID：先按账号精确查，纯数字且账号查不到时再按 id 查（_find_user）
+    user = _find_user(identifier)
+    ...
 ```
 
 > 注意 `create_access_token(identity=str(user.id))`：JWT identity 须为字符串，路由内用 `int(get_jwt_identity())` 还原。
@@ -1403,22 +1431,24 @@ def get_recommendations():
 
 | 方法 | 路径 | 说明 | 鉴权 |
 |---|---|---|---|
-| `POST` | `/api/auth/register` | 注册并返回 JWT + 用户信息 | 否 |
-| `POST` | `/api/auth/login` | 登录 | 否 |
-| `GET` | `/api/movies/` | 分页、关键词、类型、年份筛选；sort=popular/latest/movie_id | 否 |
+| `POST` | `/api/auth/register` | 注册并返回 JWT + 用户信息（账号 3-20 位，只允许字母 / 数字 / 下划线 / 连字符，规则见 `app/account_rules.py`；昵称初始等于账号） | 否 |
+| `POST` | `/api/auth/login` | 登录（`username` 字段填账号或用户 ID；纯数字时先按账号精确查、没有才按 ID 查，见 `auth._find_user`） | 否 |
+| `GET` | `/api/movies/` | 分页、关键词（`q`：`ID318` / `id318` 只按电影 ID 精确命中——前缀大小写随意、数字须紧挨着；纯数字宽匹配片名 / 简介且 ID 那条最前；文字命中片名 / 简介。规则见 `app/movie_search.py`）、类型、年份筛选；sort=popular/latest/movie_id | 否 |
 | `GET` | `/api/movies/<id>` | 电影详情 | 否 |
 | `GET` | `/api/movies/<id>/rating-stats` | 评分统计（评分人数 + 平均分 + 五档分布 + 当前用户评分） | 可选 |
 | `GET` | `/api/movies/genres` | 类型列表 | 否 |
 | `POST` | `/api/movies/<id>/comments` | 发表影评（正文必填，**且要求作者已有评分**，否则 400；一人一片一条，重复提交即更新并记 `edited_at`） | 是 |
-| `GET` | `/api/movies/<id>/comments` | 影评列表（附带作者星级；`my_comment` 单独返回当前用户那条用于置顶） | 可选 |
+| `GET` | `/api/movies/<id>/comments` | 影评列表（附带作者头像 `avatar_url`、`display_name` 与星级；`my_comment` 单独返回当前用户那条用于置顶） | 可选 |
 | `PUT` | `/api/comments/<id>` | 编辑自己的影评（正文必填；403=非本人，404=不存在） | 是 |
 | `DELETE` | `/api/comments/<id>` | 删除自己的影评；带 `?with_rating=1` 时连同自己的评分一起删（影评卡片「删除 → 不保留」走这条，两行同一次提交） | 是 |
 | `POST` | `/api/ratings/` | 新增或更新评分（取值范围 **0.5 ~ 5.0**，0 与其它越界值一律 400） | 是 |
 | `DELETE` | `/api/ratings/<movie_id>` | 删除自己对该电影的评分（**只删评分**，影评留在原地退成「仅自己可见」；影评卡片「删除 → 保留影评」会调它） | 是 |
 | `GET` | `/api/recommendations/` | 当前用户推荐（在线优先） | 是 |
-| `GET/PUT` | `/api/profile/info` | 个人信息读取/修改（用户名、签名；头像走上传接口，PUT 仍兼容外链 `avatar_url`） | 是 |
-| `POST` | `/api/profile/avatar` | 上传头像（multipart，字段名 `file`，jpg/png/gif/webp 且 ≤2MB；存 `backend/uploads/avatars`，同名换新图并删旧图） | 是 |
-| `GET` | `/api/profile/avatar/<filename>` | 读取头像图片本身（文件名带随机串，故不鉴权） | 否 |
+| `GET/PUT` | `/api/profile/info` | 个人信息读取/修改（**昵称**、签名、**头像**；账号不可改——带 `username` 返回 400。头像 `avatar_url` 只接受内置 SVG 清单里的地址，或 `null`＝恢复默认） | 是 |
+| `GET` | `/api/profile/avatars` | 内置 SVG 头像清单（`[{id, name, url}]`，顺序即选择面板顺序） | 否 |
+| `GET` | `/api/profile/avatars/<name>.svg` | 读取内置 SVG 头像本身（文件名白名单校验） | 否 |
+| `POST` | `/api/profile/avatar` | 上传头像（multipart，字段名 `file`，jpg/png/gif/webp 且 ≤2MB；存 `backend/uploads/avatars`，换新图并删旧图）——**界面已不再用**，保留给历史数据与手工调用 | 是 |
+| `GET` | `/api/profile/avatar/<filename>` | 读取历史上传的头像图片本身（文件名带随机串，故不鉴权） | 否 |
 | `GET` | `/api/profile/stats` | 观影统计（评分分布、最爱类型/导演） | 是 |
 | `GET` | `/api/profile/comments` | 我的评论（分页排序，附带我在该片评分的星级） | 是 |
 | `GET` | `/api/admin/stats` | 系统统计（用户/电影/评分/推荐量、active 模型） | admin |
@@ -1429,7 +1459,7 @@ def get_recommendations():
 
 ### 7.5 启动后端
 
-**Windows（开发机）**：项目根目录 `start.bat`（优先用 `backend/venv`，失效时回退系统 Python），或 `python scripts/start_backend.py`。
+**Windows（开发机）**：项目根目录 `start.bat`（经 `scripts/start_bg.ps1` 以隐藏窗口后台启动 Flask + Vite，日志与 PID 落在 `logs\`，启动后自动打开浏览器、默认 4 小时后自动停止，没有停止脚本；优先用 `backend/venv`，失效时回退系统 Python），或前台 `python scripts/start_backend.py`。
 
 **Linux（服务器）**：
 ```bash
@@ -1475,6 +1505,8 @@ frontend/src/
 │                              # AdminMovies / AdminRatings / AdminModels
 └── components/
     ├── NavBar.vue / MovieCard.vue / CommentSection.vue / CommentItem.vue
+    ├── UserAvatar.vue         # 头像：有图用图，无图回落显示名（昵称优先）首字符
+    ├── AvatarPicker.vue       # 头像选择面板：内置 SVG 网格 + 恢复默认
     └── ThemeSwitch.vue        # 日间 / 夜间 / 跟随系统三档主题切换
 ```
 
@@ -1550,8 +1582,10 @@ export const useAuthStore = defineStore('auth', () => {
 
 ### 8.6 交互要点
 
-- **电影浏览**（HomeView）：分页 + 名称/类型/年份筛选 + 排序（popular 过滤评分人数 < 100）；
-- **电影详情**（MovieDetailView）：海报、简介、导演、演员、国家、语言、片长（剧情简介 18px）；评分统计显示**评分人数**（MovieLens 与本站合并后的 `count`）、平均分与五档分布；录入区里**用户名 + 半星评分控件在评论框上方**（0.5~5.0，控件不可清零，点同一颗星两次不会变 0），评分与影评**必须同时填写**才能点得动「发表」；发表后表单收起、原输入框的位置由自己的影评顶替（置顶），**没有「修改」按钮**——改正文和改评分都走卡片上的「编辑」（展示态的星星一律只读，本人他人的都点不动；在编辑区里改完星星要点「保存」才落库），同一时刻全页只许一条影评处于编辑态，置顶那条与时间线里同名那条互斥（其余卡片的操作——「编辑」和「删除」——全部禁用且整卡压暗）；置顶展示块与时间线之间有一条分割线；时间只在卡片底部显示一处（「发布于 …」+ 改过正文才有的「上次修改于 …」）；删除只有一个入口（影评卡片上的「删除」），确认框问「这条影评草稿要保留吗」——保留＝只删评分（`DELETE` 把 `user_ratings` 那一行硬删除，影评退成仅自己可见），不保留＝两行一起删、置顶那块变回输入框；评论区（时间倒序、分页、显示评论者星级）；改评分或影评未提交就离开会弹确认框；
+- **电影浏览**（HomeView）：分页 + 搜索（`q` 支持四种输入，见 `backend/app/movie_search.py`：`ID318` / `id318` 只按电影 ID 精确命中、纯数字 `318` 宽匹配片名 / 简介且 ID 那条排最前、文字命中片名、文字命中简介）/类型/年份筛选 + 排序（popular 的「评分人数 ≥ 100」门槛只在**无搜索词**时生效，带搜索词时不过滤，否则冷门片搜不到）；
+- **电影详情**（MovieDetailView）：海报、简介、导演、演员、国家、语言、片长（标题下方用浅灰小字标出**电影 ID**，方便照抄成 `id318` 去精确搜索；「剧情简介」标题 20px、正文 18px）；评分统计显示**评分人数**（MovieLens 与本站合并后的 `count`）、平均分与五档分布；录入区里**显示名（昵称优先、回落账号）+ 半星评分控件在评论框上方**（0.5~5.0，控件不可清零，点同一颗星两次不会变 0），评分与影评**必须同时填写**才能点得动「发表」；发表后表单收起、原输入框的位置由自己的影评顶替（置顶），**没有「修改」按钮**——改正文和改评分都走卡片上的「编辑」（展示态的星星一律只读，本人他人的都点不动；在编辑区里改完星星要点「保存」才落库），同一时刻全页只许一条影评处于编辑态，置顶那条与时间线里同名那条互斥（其余卡片的操作——「编辑」和「删除」——全部禁用且整卡压暗）；置顶展示块与时间线之间有一条分割线；时间只在卡片底部显示一处（「发布于 …」+ 改过正文才有的「上次修改于 …」）；删除只有一个入口（影评卡片上的「删除」），确认框问「这条影评草稿要保留吗」——保留＝只删评分（`DELETE` 把 `user_ratings` 那一行硬删除，影评退成仅自己可见），不保留＝两行一起删、置顶那块变回输入框；评论区（时间倒序、分页、显示评论者星级）；影评卡片左侧一律带**作者头像**（`comment.avatar_url`，为空则回落成显示名首字符，见 `UserAvatar.vue`）；改评分或影评未提交就离开会弹确认框；
+- **注册 / 登录**（RegisterView / LoginView）：账号限 3-20 位字母 / 数字 / 下划线 / 连字符（前端校验与 `app/account_rules.py` 同一套正则）；登录框的「账号 / ID」两样都收；昵称在个人主页改，注册时不填；
+- **个人主页**（ProfileView）：点昵称就地改（任意字符，含中文；清空即回落显示账号），账号与 ID 在昵称下方只读展示——账号不可改，用 ID 也能登录；点头像打开 `AvatarPicker`（内置 SVG 网格 + 恢复默认，点一下即调 `PUT /api/profile/info` 落库，`avatar_url` 为 `null` 表示默认头像）；
 - **推荐页**（RecommendationsView）：星级推荐指数（ALS 预测分归一化到 0.5~5.0）；无 active 模型时显示空状态（正常现象）；
 - **管理后台**（/admin）：统计数据、用户/电影/评分/模型管理，非 admin 访问静默跳回首页。
 
@@ -1590,8 +1624,8 @@ bash scripts/run_training.sh      # 3. 离线训练（首次或周期性）
 
 **开发机**：
 ```bat
-:: Windows：项目根目录
-start.bat                         :: 同时启动 Flask + Vue
+:: Windows：项目根目录（隐藏窗口后台运行，日志/PID 在 logs\，自动开浏览器、默认 4 小时后自动停）
+start.bat
 ```
 ```bash
 # 或分别启动
@@ -1618,7 +1652,7 @@ SELECT COUNT(DISTINCT user_id) FROM recommendations WHERE model_version = '<版�
 ```
 
 #### 用户注册登录
-1. 访问 `http://localhost:5173` → 注册 → 自动登录，右上角显示用户名
+1. 访问 `http://localhost:5173` → 注册（账号如 `movie_fan`，中文之类留给昵称）→ 自动登录，右上角显示昵称；退出后用**账号或用户 ID** 都能再登进来
 
 #### 电影浏览与评分
 1. 首页电影列表分页、搜索 "Toy Story"、类型筛选 Action
@@ -1723,7 +1757,7 @@ WHERE model_version = '<active版本>' AND movie_id IN (
 
 ### A. 配置文件示例
 
-完整配置见 [`config.example.yaml`](../config.example.yaml)（`config.yaml` 为本地真实配置，已被 .gitignore / .aiignore 忽略）：
+完整配置见 [`config.example.yaml`](../config.example.yaml)（`config.yaml` 为本地真实配置，已被 .gitignore 忽略）：
 
 ```yaml
 hdfs:
@@ -1760,8 +1794,8 @@ jwt:       # access token 有效期（小时），默认 168 = 7 天
 cors:
   origins: ["http://localhost:5173", "http://127.0.0.1:5173"]
 
-tmdb:      # 根目录 fetch_posters.py 电影富化
-vm:        # 根目录 sync_movie_stats.py 虚拟机统计同步（仅本地开发）
+tmdb:      # scripts/fetch_posters.py 电影富化
+vm:        # 根目录 scripts/sync_code_to_vm.py 同步代码到虚拟机（仅本地开发）
 ```
 
 > 所有代码与脚本从 `config.yaml` 读配置，禁止硬编码凭据。
@@ -1805,7 +1839,7 @@ Spark 侧无需 pip 依赖（集群 spark-submit 提供 PySpark），另需 MySQ
 ### C. 测试与静态验证
 
 ```bash
-python -m unittest discover -s tests -v        # 140 个用例：训练契约、评分表契约、
+python -m unittest discover -s tests -v        # 166 个用例：训练契约、评分表契约、
                                                # 评分统计、影评全链路、详情页 UI 契约、
                                                # 在线推荐、模型生命周期、SQL 契约等
 python -m compileall -q backend spark scripts  # 语法检查

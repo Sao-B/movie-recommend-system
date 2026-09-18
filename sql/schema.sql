@@ -36,14 +36,15 @@ USE movie_recommend;
 -- ============================================================
 CREATE TABLE IF NOT EXISTS users (
   id           INT          NOT NULL AUTO_INCREMENT COMMENT '用户主键，自增正整数',
-  username     VARCHAR(50)  NOT NULL UNIQUE         COMMENT '用户名，唯一',
+  username     VARCHAR(50)  NOT NULL UNIQUE         COMMENT '账号，唯一；注册时按 app/account_rules.py 的规则命名（3-20 位字母/数字/下划线/连字符），登录可用它或 id',
   password_hash VARCHAR(255) NOT NULL                COMMENT '密码哈希（werkzeug generate_password_hash / pbkdf2）',
-  avatar_url   VARCHAR(500)          NULL            COMMENT '用户头像 URL（migrations/004 新增）',
+  avatar_url   VARCHAR(500)          NULL            COMMENT '头像地址：内置 SVG /api/profile/avatars/<名>.svg、历史上传 /api/profile/avatar/<文件名> 或早期外链；NULL＝默认头像（显示名首字符）',
   bio          TEXT                  NULL            COMMENT '个人签名/简介（migrations/004 新增）',
+  nickname     VARCHAR(50)           NULL            COMMENT '昵称，展示用，任意字符、不唯一；为空时回落显示 username（migrations/011 新增）',
   created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '注册时间',
   role         ENUM('user', 'admin') NOT NULL DEFAULT 'user' COMMENT '用户角色：user=普通用户, admin=管理员',
   PRIMARY KEY (id),
-  INDEX idx_username (username),
+  -- username 的唯一索引由上面列级 UNIQUE 隐式创建（名为 username），不要再另建同列普通索引
   INDEX idx_user_role (role)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='系统注册用户表';
 
@@ -61,8 +62,10 @@ CREATE TABLE IF NOT EXISTS users (
 -- 数据来源：
 --   - Spark 脚本 preprocess.py 从 HDFS 读取 movies.csv，清洗后经 movies_staging
 --     暂存、upsert 写入基础四列（movie_id / title / genres / year），可重复执行
---   - import_movie_stats.py、sync_movie_stats.py 回填 avg_rating、rating_count
+--   - import_movie_stats.py 回填 avg_rating、rating_count
 --   - fetch_posters.py 按 TMDB API 回填 poster_url、overview、director、writers 等富化列
+--     （该脚本按列宽截断，poster_url/director/writers/countries/languages 五列必须 >= 500；
+--       countries 实测最长 258 字符，线上这五列均为 varchar(500)）
 --   - 当前约 87,585 条记录
 --
 -- 关联表（外键约束）：
@@ -83,21 +86,23 @@ CREATE TABLE IF NOT EXISTS movies (
   title         VARCHAR(500) NOT NULL COMMENT '电影标题（含年份），如 "Toy Story (1995)"',
   genres        VARCHAR(500)          COMMENT '类型，竖线分隔，如 "Action|Drama"',
   year          SMALLINT              COMMENT '上映年份，从 title 正则解析',
-  avg_rating    DECIMAL(3,2)          COMMENT '平均评分（0.00-5.00）',
-  rating_count  INT          DEFAULT 0 COMMENT '评分人数',
   poster_url    VARCHAR(500)          COMMENT 'TMDB 海报 URL',
   overview      TEXT                  COMMENT '电影简介',
   director      VARCHAR(500)          COMMENT '导演',
-  writers       TEXT                  COMMENT '编剧（多个用逗号分隔）',
+  writers       VARCHAR(500)          COMMENT '编剧（多个用逗号分隔）',
   `cast`        TEXT                  COMMENT '主演（多个用逗号分隔）',
-  countries     VARCHAR(200)          COMMENT '制片国家/地区',
-  languages     VARCHAR(200)          COMMENT '语言',
+  countries     VARCHAR(500)          COMMENT '制片国家/地区',
+  languages     VARCHAR(500)          COMMENT '语言',
   release_date  DATE                  COMMENT '上映日期',
   runtime       SMALLINT              COMMENT '片长（分钟）',
+  -- 统计列由 migrations/001 追加，物理位置排在元数据列之后（与线上库一致）
+  avg_rating    DECIMAL(3,2)          COMMENT '平均评分（0.00-5.00）',
+  rating_count  INT          DEFAULT 0 COMMENT '评分人数',
   PRIMARY KEY (movie_id),
+  -- idx_popularity 的最左前缀就是 rating_count，因此不再单建 idx_rating_count
   INDEX idx_genres (genres(100)),
   INDEX idx_year (year),
-  INDEX idx_rating_count (rating_count)
+  INDEX idx_popularity (rating_count DESC, avg_rating DESC) COMMENT '热门排序（首页与电影库默认排序）'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='电影元数据表';
 
 -- ============================================================
@@ -134,8 +139,7 @@ CREATE TABLE IF NOT EXISTS user_ratings (
   rating    FLOAT     NOT NULL COMMENT '评分值，范围 [0.5, 5.0]，步长 0.5' CHECK (rating >= 0.5 AND rating <= 5.0),
   rated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '评分时间',
   PRIMARY KEY (id),
-  UNIQUE KEY uk_user_movie (user_id, movie_id) COMMENT '同一用户对同一电影只能评分一次',
-  INDEX idx_user   (user_id)  COMMENT '按用户查询评分历史',
+  UNIQUE KEY uk_user_movie (user_id, movie_id) COMMENT '同一用户对同一电影只能评分一次（用户维度的查询走它的最左前缀，不再另建 idx_user）',
   INDEX idx_movie  (movie_id) COMMENT '按电影查询评分统计',
   -- 用户删除时级联删除其评分（注：MySQL 不支持在 FOREIGN KEY 子句后写 COMMENT，故用普通注释）
   CONSTRAINT fk_user_ratings_user FOREIGN KEY (user_id) REFERENCES users(id)
@@ -226,8 +230,7 @@ CREATE TABLE IF NOT EXISTS model_item_factors (
   movie_id      INT         NOT NULL COMMENT '电影 ID，对应 movies.movie_id',
   factors       TEXT        NOT NULL COMMENT 'JSON 数组格式的电影隐向量，如 "[0.12, -0.34, ...]"',
   generated_at  TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '因子生成时间',
-  PRIMARY KEY (model_version, movie_id),
-  INDEX idx_factor_version (model_version) COMMENT '按模型版本查询所有电影因子',
+  PRIMARY KEY (model_version, movie_id),  -- 按模型版本查询走它的最左前缀，不再另建 idx_factor_version
   -- 模型删除时级联删除其电影因子（FK 子句后不能写 COMMENT）
   CONSTRAINT fk_item_factors_version FOREIGN KEY (model_version)
     REFERENCES model_versions(version)
@@ -318,13 +321,13 @@ CREATE TABLE IF NOT EXISTS movie_comments (
   updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '行最后写入时间（插入时即等于发表时间，别用它判断是否编辑过）',
   edited_at   TIMESTAMP NULL     DEFAULT NULL COMMENT '用户手动编辑正文的时间；从未编辑过为 NULL（migrations/007 新增）',
   PRIMARY KEY (id),
-  INDEX idx_movie_created (movie_id, created_at DESC) COMMENT '按电影查询评论，按时间倒序',
+  INDEX idx_movie_time (movie_id, created_at DESC) COMMENT '按电影查询评论，按时间倒序',
   INDEX idx_user (user_id) COMMENT '按用户查询评论',
   -- 用户删除时级联删除其评论（FK 子句后不能写 COMMENT）
-  CONSTRAINT fk_comments_user FOREIGN KEY (user_id) REFERENCES users(id)
+  CONSTRAINT fk_comment_user FOREIGN KEY (user_id) REFERENCES users(id)
     ON DELETE CASCADE,
   -- 电影删除时级联删除其评论
-  CONSTRAINT fk_comments_movie FOREIGN KEY (movie_id) REFERENCES movies(movie_id)
+  CONSTRAINT fk_comment_movie FOREIGN KEY (movie_id) REFERENCES movies(movie_id)
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='电影评论表';
 

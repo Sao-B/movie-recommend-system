@@ -3,16 +3,16 @@
     <el-card class="auth-card">
       <template #header><h2 class="card-title">注册</h2></template>
       <el-form :model="form" :rules="rules" ref="formRef" label-position="top">
-        <el-form-item label="用户名" prop="username">
-          <el-input v-model="form.username" placeholder="4-20 个字符" prefix-icon="User" />
+        <el-form-item label="账号" prop="username">
+          <el-input v-model="form.username" placeholder="3-20 位，字母 / 数字 / _ / -" :prefix-icon="User" />
         </el-form-item>
         <el-form-item label="密码" prop="password">
           <el-input v-model="form.password" type="password" placeholder="至少 6 位"
-            prefix-icon="Lock" show-password />
+            :prefix-icon="Lock" show-password />
         </el-form-item>
         <el-form-item label="确认密码" prop="confirm">
           <el-input v-model="form.confirm" type="password" placeholder="再次输入密码"
-            prefix-icon="Lock" show-password @keyup.enter="submit" />
+            :prefix-icon="Lock" show-password @keyup.enter="submit" />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="loading" class="full-btn" @click="submit">注册</el-button>
@@ -26,6 +26,7 @@
 <script setup>
 import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
+import { User, Lock } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 
@@ -36,9 +37,11 @@ const loading = ref(false)
 const form    = reactive({ username: '', password: '', confirm: '' })
 
 const rules = {
+  // 与后端 backend/app/account_rules.py 同一套规则：3-20 位，只允许字母 / 数字 / 下划线 / 连字符。
+  // 中文之类的名字走「昵称」（注册后在个人主页改），不受这里限制。
   username: [
-    { required: true, message: '请输入用户名', trigger: 'blur' },
-    { min: 4, max: 20, message: '用户名 4-20 个字符', trigger: 'blur' },
+    { required: true, message: '请输入账号', trigger: 'blur' },
+    { pattern: /^[A-Za-z0-9_-]{3,20}$/, message: '账号 3-20 位，只能包含字母、数字、下划线、连字符', trigger: 'blur' },
   ],
   password: [
     { required: true, message: '请输入密码', trigger: 'blur' },
@@ -55,7 +58,9 @@ const rules = {
 }
 
 async function submit() {
-  await formRef.value.validate()
+  // 校验没过就直接返回（与后台页面一致：validate() 失败会 reject，不 catch 会留下未处理的 rejection）
+  const valid = await formRef.value.validate().catch(() => false)
+  if (!valid) return
   loading.value = true
   try {
     await auth.register(form.username, form.password)

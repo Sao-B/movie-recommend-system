@@ -3,7 +3,9 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import get_jwt_identity, verify_jwt_in_request
 from sqlalchemy import func
 from ..db import db
+from ..account_rules import username_error
 from ..models import User, Movie, UserRating, ModelVersion, Recommendation, MovieComment
+from ..movie_search import movie_keyword_filter
 from ..pagination import get_pagination
 
 admin_bp = Blueprint('admin', __name__)
@@ -134,20 +136,26 @@ def list_users():
 @admin_bp.post("/users")
 @admin_required
 def create_user():
-    """创建新用户"""
+    """创建新用户
+
+    账号走与注册同一套命名规则（``app/account_rules.py``），昵称初始与账号同名。
+    """
     data = request.get_json(silent=True) or {}
     username = (data.get("username") or "").strip()
     password = (data.get("password") or "").strip()
     role = data.get("role", "user")
 
     if not username or not password:
-        return jsonify({"msg": "用户名和密码不能为空"}), 400
+        return jsonify({"msg": "账号和密码不能为空"}), 400
+    invalid = username_error(username)
+    if invalid:
+        return jsonify({"msg": invalid}), 400
     if role not in ["user", "admin"]:
         return jsonify({"msg": "角色必须是 user 或 admin"}), 400
     if User.query.filter_by(username=username).first():
-        return jsonify({"msg": "用户名已存在"}), 409
+        return jsonify({"msg": "账号已存在"}), 409
 
-    user = User(username=username, role=role)
+    user = User(username=username, nickname=username, role=role)
     user.set_password(password)
     db.session.add(user)
     db.session.commit()
@@ -168,8 +176,12 @@ def update_user(user_id):
     if "username" in data:
         new_username = data["username"].strip()
         if new_username and new_username != user.username:
+            # 后台改账号算特权操作，但字符规则与注册保持一致（app/account_rules.py）
+            invalid = username_error(new_username)
+            if invalid:
+                return jsonify({"msg": invalid}), 400
             if User.query.filter_by(username=new_username).first():
-                return jsonify({"msg": "用户名已存在"}), 409
+                return jsonify({"msg": "账号已存在"}), 409
             user.username = new_username
 
     if "role" in data:
@@ -196,8 +208,9 @@ def delete_user(user_id):
     if user_id == current_user_id:
         return jsonify({"msg": "不能删除当前登录的管理员"}), 400
 
-    # user_ratings / movie_comments / recommendations 的外键都没有配置级联删除，
-    # 这里先手动清理关联数据，否则 MySQL 会抛外键约束错误。
+    # recommendations 没有指向 users 的外键（只按 ID 关联，见 schema.sql），必须手动清理；
+    # user_ratings / movie_comments 的外键是 ON DELETE CASCADE，本可自动级联，
+    # 这里仍显式删一遍——把删除范围写在代码里，不依赖库的外键配置。
     deleted = {}
     deleted["ratings"] = UserRating.query.filter_by(user_id=user_id).delete()
     deleted["comments"] = MovieComment.query.filter_by(user_id=user_id).delete()
@@ -213,7 +226,12 @@ def delete_user(user_id):
 @admin_bp.get("/movies")
 @admin_required
 def list_movies():
-    """获取电影列表（分页）"""
+    """获取电影列表（分页）
+
+    ``q`` 与前台 ``GET /api/movies`` 同一套规则（见 ``app/movie_search.py``）：
+    ``ID318``（小写 ``id318`` 同样认）只按 ID 精确命中，``318`` 宽匹配片名 / 简介（ID 命中排最前），
+    文字则在片名与简介里做子串匹配。后台按 ID 查片不用再去翻列表。
+    """
     page, per_page = get_pagination()
     q = request.args.get("q", "").strip()
     genres = request.args.get("genres", "").strip()
@@ -221,9 +239,9 @@ def list_movies():
 
     query = Movie.query
     if q:
-        query = query.filter(Movie.title.ilike(f"%{q}%"))
+        query = query.filter(movie_keyword_filter(q))
     if genres:
-        query = query.filter(Movie.genres.ilike(f"%{genres}%"))
+        query = query.filter(Movie.genres.like(f"%{genres}%"))
     if year:
         query = query.filter(Movie.year == year)
 
@@ -288,7 +306,8 @@ def delete_movie(movie_id):
     if not movie:
         return jsonify({"msg": "电影不存在"}), 404
 
-    # 同 delete_user：关联表未配置级联，先清理再删主记录。
+    # 同 delete_user：user_ratings / recommendations 没有指向 movies 的外键，必须手动清理；
+    # movie_comments 与 movie_rating_stats 是 ON DELETE CASCADE，这里仍显式删一遍。
     deleted = {}
     deleted["ratings"] = UserRating.query.filter_by(movie_id=movie_id).delete()
     deleted["comments"] = MovieComment.query.filter_by(movie_id=movie_id).delete()
