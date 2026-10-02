@@ -33,6 +33,22 @@ class TemporalSplitTests(unittest.TestCase):
         rows = [(1, i, 4.0, i) for i in range(10)]
         self.assertEqual(temporal_split(rows), temporal_split(rows))
 
+    def test_tie_break_input_order_invariant(self):
+        # 4 条评分同一秒（ts 全为 1），tie 由 movieId 决胜，与输入行序无关
+        rows = [(1, 101, 4.0, 1), (1, 102, 3.0, 1), (1, 103, 5.0, 1), (1, 104, 2.0, 1)]
+        train, test = temporal_split(rows)
+        self.assertEqual({r[1] for r in test}, {104})  # movieId 最大的进测试集
+        rev_train, rev_test = temporal_split(rows[::-1])
+        self.assertEqual(sorted(train), sorted(rev_train))
+        self.assertEqual(sorted(test), sorted(rev_test))
+
+    def test_split_fraction_uses_ratio(self):
+        # 10 条评分应按 20% 留 2 条测试（锁住 int(n * test_frac) 分支）
+        rows = [(1, i, 4.0, i) for i in range(1, 11)]
+        train, test = temporal_split(rows)
+        self.assertEqual(len(train), 8)
+        self.assertEqual(len(test), 2)
+
 
 if __name__ == '__main__':
     unittest.main()

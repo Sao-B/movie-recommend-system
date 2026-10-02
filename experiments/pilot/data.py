@@ -2,6 +2,7 @@
 
 只做 train/test 两段：试点超参固定为文献值，不调参，故不切验证集。
 单评分用户无法评测，整条留训练集。
+同 timestamp 时按 movieId 决胜，保证与输入行序无关、切分可复现。
 """
 from collections import defaultdict
 
@@ -12,7 +13,7 @@ def temporal_split(rows, test_frac=0.2):
         by_user[row[0]].append((idx, row))
     train_idx, test_idx = [], []
     for user in sorted(by_user):
-        entries = sorted(by_user[user], key=lambda t: (t[1][3], t[0]))
+        entries = sorted(by_user[user], key=lambda t: (t[1][3], t[1][1], t[0]))
         n = len(entries)
         if n < 2:
             train_idx.extend(i for i, _ in entries)
