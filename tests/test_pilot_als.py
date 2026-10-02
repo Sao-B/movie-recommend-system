@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from experiments.pilot.als import init_factors, predict_one, solve_bias, solve_factor
+from experiments.pilot.als import fit_spark, init_factors, predict_one, solve_bias, solve_factor, train_rmse
 
 
 class AlsCoreTests(unittest.TestCase):
@@ -35,6 +35,24 @@ class AlsCoreTests(unittest.TestCase):
         b = init_factors([1, 2], rank=4, seed=42)
         np.testing.assert_array_equal(a[1], b[1])
         self.assertFalse(np.allclose(a[1], a[2]))  # 不同 id 初值不同
+
+    def test_fit_spark_rejects_duplicate_pairs(self):
+        class _NoSpark(object):
+            @property
+            def sparkContext(self):
+                raise AssertionError('sparkContext 不应被触碰')
+        rows = [(1, 1, 5.0, 1), (1, 1, 3.0, 2)]
+        with self.assertRaises(ValueError):
+            fit_spark(_NoSpark(), rows, rank=2, reg=0.1, iters=1)
+
+    def test_train_rmse_matches_hand_computed(self):
+        model = {'mu': 1.0,
+                 'bu': {1: 0.5}, 'bi': {2: -0.25},
+                 'P': {1: np.array([2.0, 0.0])}, 'Q': {2: np.array([0.5, 1.0])}}
+        rows = [(1, 2, 2.0, 1)]
+        # pred = 1 + 0.5 - 0.25 + 1.0 = 2.25 -> rmse = 0.25
+        self.assertAlmostEqual(train_rmse(rows, model['mu'], model['bu'], model['bi'],
+                                          model['P'], model['Q']), 0.25, places=9)
 
 
 if __name__ == '__main__':
