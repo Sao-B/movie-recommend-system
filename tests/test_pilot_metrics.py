@@ -106,8 +106,10 @@ class MetricsContractTests(unittest.TestCase):
                          rmse([(1.0, 3.0), (2.0, 4.0)]))
 
     def test_ndcg_idcg_deduplicates_relevant(self):
-        # relevant 有重复项时理想 DCG 按去重后的大小算
-        self.assertEqual(ndcg_at_k(['a'], ['a', 'a'], 2), 1.0)
+        # relevant 有重复项时理想 DCG 按去重后的大小算。
+        # k=2 使 min(len(rel), k)=1 与 min(len(relevant), k)=2 分叉（1 vs 2），
+        # 这正是该用例能杀死"不去重"变异体的原因；若 k=1 两者同为 1，会变同义反复。
+        self.assertAlmostEqual(ndcg_at_k(['a'], ['a', 'a'], 2), 1.0, places=9)
 
 
 if __name__ == '__main__':

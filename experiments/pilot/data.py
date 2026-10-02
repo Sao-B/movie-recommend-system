@@ -13,7 +13,7 @@ def temporal_split(rows, test_frac=0.2):
         by_user[row[0]].append((idx, row))
     train_idx, test_idx = [], []
     for user in sorted(by_user):
-        entries = sorted(by_user[user], key=lambda t: (t[1][3], t[1][1], t[0]))
+        entries = sorted(by_user[user], key=lambda t: (t[1][3], t[1][1], t[0]))  # 防御性兜底：(ts, movieId) 在真实数据已唯一
         n = len(entries)
         if n < 2:
             train_idx.extend(i for i, _ in entries)

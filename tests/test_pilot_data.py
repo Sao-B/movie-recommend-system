@@ -38,16 +38,19 @@ class TemporalSplitTests(unittest.TestCase):
         rows = [(1, 101, 4.0, 1), (1, 102, 3.0, 1), (1, 103, 5.0, 1), (1, 104, 2.0, 1)]
         train, test = temporal_split(rows)
         self.assertEqual({r[1] for r in test}, {104})  # movieId 最大的进测试集
+        # 承重断言是下面两条反转比较：成员断言（{104}）在旧实现下也可能过，
+        # 只有「输入行序反转后切分结果逐条相同」才真正锁住按 movieId 决胜。
         rev_train, rev_test = temporal_split(rows[::-1])
         self.assertEqual(sorted(train), sorted(rev_train))
         self.assertEqual(sorted(test), sorted(rev_test))
 
     def test_split_fraction_uses_ratio(self):
-        # 10 条评分应按 20% 留 2 条测试（锁住 int(n * test_frac) 分支）
-        rows = [(1, i, 4.0, i) for i in range(1, 11)]
+        # 8 条评分按 20% 留测试：锁住向下取整语义——int(8*0.2)=1（区别于
+        # round(8*0.2)=2）。n=10 时 int 与 round 同为 2，锁不住这个分支。
+        rows = [(1, i, 4.0, i) for i in range(1, 9)]
         train, test = temporal_split(rows)
-        self.assertEqual(len(train), 8)
-        self.assertEqual(len(test), 2)
+        self.assertEqual(len(train), 7)
+        self.assertEqual(len(test), 1)
 
 
 if __name__ == '__main__':

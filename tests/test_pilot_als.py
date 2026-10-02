@@ -36,6 +36,13 @@ class AlsCoreTests(unittest.TestCase):
         np.testing.assert_array_equal(a[1], b[1])
         self.assertFalse(np.allclose(a[1], a[2]))  # 不同 id 初值不同
 
+    def test_init_is_seed_sensitive(self):
+        # 上面的 test_init_deterministic 只锁「同种子一致 + 不同 id 不同」，
+        # 杀不死「忽略 seed、只用 id 派生」的变异体（该变异体两条断言都过）。
+        # 这里补上跨种子差异：seed 必须真正参与初值派生。
+        self.assertFalse(np.allclose(init_factors([1], rank=4, seed=42)[1],
+                                     init_factors([1], rank=4, seed=7)[1]))
+
     def test_fit_spark_rejects_duplicate_pairs(self):
         class _NoSpark(object):
             @property
