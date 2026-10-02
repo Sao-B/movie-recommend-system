@@ -105,6 +105,10 @@ class MetricsContractTests(unittest.TestCase):
         self.assertEqual(rmse(([1.0, 3.0], [2.0, 4.0])),
                          rmse([(1.0, 3.0), (2.0, 4.0)]))
 
+    def test_ndcg_idcg_deduplicates_relevant(self):
+        # relevant 有重复项时理想 DCG 按去重后的大小算
+        self.assertEqual(ndcg_at_k(['a'], ['a', 'a'], 2), 1.0)
+
 
 if __name__ == '__main__':
     unittest.main()
