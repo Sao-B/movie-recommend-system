@@ -130,16 +130,20 @@ def main():
     ]
 
     # 测试集预测（向量化）与 RMSE / 越界率
-    u_arr = np.fromiter((u for u, _, _, _ in test), dtype=np.int64, count=len(test))
-    i_arr = np.fromiter((scorer.i_index[i] for _, i, _, _ in test), dtype=np.int64, count=len(test))
-    r_arr = np.fromiter((r for _, _, r, _ in test), dtype=np.float64, count=len(test))
+    # 冷物品（不在训练候选集）按 MLlib coldStartStrategy=drop 口径剔除后评估
+    pred_rows = [row for row in test if row[1] in scorer.i_index]
+    dropped_cold = len(test) - len(pred_rows)
+    u_arr = np.fromiter((u for u, _, _, _ in pred_rows), dtype=np.int64, count=len(pred_rows))
+    i_arr = np.fromiter((scorer.i_index[i] for _, i, _, _ in pred_rows), dtype=np.int64, count=len(pred_rows))
+    r_arr = np.fromiter((r for _, _, r, _ in pred_rows), dtype=np.float64, count=len(pred_rows))
     pred_pairs = scorer.pred_pairs(u_arr, i_arr, r_arr)
     all_preds = [p for p, _ in pred_pairs]
     out_of_range = sum(1 for p in all_preds if p < 1.0 or p > 5.0) / float(len(all_preds))
     rmse_rows = [
         {'model': 'ALS', 'rmse': rmse(pred_pairs)},
-        {'model': 'Const(mu)', 'rmse': rmse([(model['mu'], r) for _, _, r, _ in test])},
+        {'model': 'Const(mu)', 'rmse': rmse([(model['mu'], r) for _, _, r, _ in pred_rows])},
     ]
+    print('pred_rows=%d dropped_cold=%d' % (len(pred_rows), dropped_cold))
 
     if not os.path.isdir(args.out):
         os.makedirs(args.out)
@@ -163,6 +167,7 @@ def main():
         w = csv.writer(f)
         w.writerow(['metric', 'value'])
         w.writerow(['out_of_range_rate', '%.6f' % out_of_range])
+        w.writerow(['dropped_cold', '%d' % dropped_cold])
         for k, v in enumerate(losses):
             w.writerow(['train_rmse_iter%d' % (k + 1), '%.6f' % v])
 
