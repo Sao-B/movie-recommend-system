@@ -57,7 +57,7 @@ fusion:
   #   genre_quota       高差评标签每页类型配额（0=关）
   v5:
     enabled: false
-    popularity_alpha: 0.5
+    popularity_alpha: 0.2
     als_neg_lambda: 0.2
     als_neg_cap: 0.5
     recent_window: 10

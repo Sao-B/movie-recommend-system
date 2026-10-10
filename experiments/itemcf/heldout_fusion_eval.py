@@ -504,7 +504,8 @@ def top_n_from_matrix(fused, cand_ids, top_n):
 # tune 半网格搜索与全变体打分
 # ---------------------------------------------------------------------------
 
-def score_variants_for_user(record, params, top_n):
+def score_variants_for_user(record, params, top_n, pop_alpha=V5_POP_ALPHA,
+                            v8_key='V8_pop_rerank'):
     """按变体清单给单用户出 Top-N；返回 ``{variant_name: [movieId, ...]}``。
 
     V0/V1/V2 的候选 = R1 证据集（分数 > 0；与第五轮 ItemCF"只返回正分条目"
@@ -565,14 +566,14 @@ def score_variants_for_user(record, params, top_n):
 
         u_pop = record.get('u_pop')
         fused8 = fused7
-        if u_pop is not None and V5_POP_ALPHA > 0.0:
+        if u_pop is not None and pop_alpha > 0.0:
             pos_pops = u_pop[u_pop > 0]
             med = (float(np.median(pos_pops)) if pos_pops.shape[0] else 1.0)
             # reshape(-1,1)：fused7 是 (n,1) 矩阵，scale 一维相除会被 NumPy
             # 广播成 (n,n)（每一列除以不同的 scale[j]），Top-N 就取错列了
             scale = np.maximum(u_pop / max(med, 1.0), 1.0).reshape(-1, 1)
-            fused8 = fused7 / np.power(scale, V5_POP_ALPHA)   # 只罚不奖
-        out['V8_pop_rerank'] = top_n_from_matrix(
+            fused8 = fused7 / np.power(scale, pop_alpha)   # 只罚不奖
+        out[v8_key] = top_n_from_matrix(
             fused8, record['u_ids'], top_n)[0]
     return out
 
@@ -752,6 +753,8 @@ def main(argv=None):
                              '因子的极端点积会让 ALS 信号退化为随机排序）。')
     parser.add_argument('--catalog-size', type=int, default=None,
                         help='片库总数（覆盖率分母）。缺省用 ALS 因子表大小。')
+    parser.add_argument('--v5-pop-alpha', type=float, default=V5_POP_ALPHA,
+                        help='V8 热门降权指数（缺省 0.5）。敏感性分析可调。')
     args = parser.parse_args(argv)
 
     started = time.time()
@@ -845,15 +848,20 @@ def main(argv=None):
     if 'V5_coverage_oriented' in params:
         variant_names.append('V5_coverage_oriented')
     # V6/V7/V8：无自由参数，记录里带 V5 字段就一定产出（按首个用户探测）
-    for name in ('V6_label_freq', 'V7_als_neg', 'V8_pop_rerank'):
+    v8_name = ('V8_pop_rerank' if args.v5_pop_alpha == V5_POP_ALPHA
+               else 'V8_pop_rerank_a%s' % ('%g' % args.v5_pop_alpha))
+    for name in ('V6_label_freq', 'V7_als_neg', v8_name):
         if name not in variant_names and scored_users \
                 and name in score_variants_for_user(
-                    records[scored_users[0]], params, args.top_n):
+                    records[scored_users[0]], params, args.top_n,
+                    pop_alpha=args.v5_pop_alpha, v8_key=v8_name):
             variant_names.append(name)
     recs_by_variant = dict((name, []) for name in variant_names)
     relevants = []
     for user in scored_users:
-        scored = score_variants_for_user(records[user], params, args.top_n)
+        scored = score_variants_for_user(records[user], params, args.top_n,
+                                         pop_alpha=args.v5_pop_alpha,
+                                         v8_key=v8_name)
         for name in variant_names:
             recs_by_variant[name].append(scored[name])
         relevants.append(records[user]['relevant'])
@@ -883,6 +891,7 @@ def main(argv=None):
         'test_users': len(test_users),
         'users_skipped_no_relevant': skipped_no_relevant,
         'als_min_support': args.als_min_support,
+        'v5_pop_alpha': args.v5_pop_alpha,
         'catalog_size': catalog_size,
         'variants': dict(
             (name, _variant_entry(name, metrics_by_variant[name]['ndcg'],
