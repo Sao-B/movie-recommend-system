@@ -472,6 +472,7 @@ def build_graph_edges(spark, cooc, n_like_map, beta, max_k, log_fn=log,
         ``tests/test_spark_itemcf_core.py``），流式版依赖 sort 的前提也就
         有了回归保护。
     """
+    from pyspark.sql import functions as F
     n_like_broadcast = spark.sparkContext.broadcast(dict(n_like_map))
     if streaming:
         partition_fn = make_streaming_edge_partition_fn(
@@ -486,10 +487,12 @@ def build_graph_edges(spark, cooc, n_like_map, beta, max_k, log_fn=log,
     # make_streaming_edge_partition_fn 的 docstring）。缺了它，同一 src 的
     # 候选会被切成多段、每段各自做一次 Top-K，产出**少边**的图且不报错。
     # 代价是每个分区内多一次排序（外部排序，会 spill），换来内存与总量解耦。
-    edges_rdd = (cooc
-                 .repartition(cooc.rdd.getNumPartitions(), 'src').rdd
-                 .sortWithinPartitions(keyfunc=lambda row: int(row['src']))
-                 .mapPartitions(partition_fn))
+    # sortWithinPartitions 是 DataFrame API（RDD 没有这个方法）：在重分区后
+    # 的 DF 上做分区内排序，再转 RDD 喂给流式分区函数
+    cooc_sorted = (cooc
+                   .repartition(cooc.rdd.getNumPartitions(), 'src')
+                   .sortWithinPartitions(F.col('src')))
+    edges_rdd = cooc_sorted.rdd.mapPartitions(partition_fn)
     edges = spark.createDataFrame(edges_rdd,
                                   ['src', 'tgt', 'sim', 'c']).persist()
     n_edges = edges.count()
