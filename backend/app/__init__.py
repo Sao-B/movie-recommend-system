@@ -62,6 +62,12 @@ def create_app(config_obj=None):
             als_min_support=app.config.get("FUSION_ALS_MIN_SUPPORT", 1000),
             als_top_k=app.config.get("FUSION_ALS_TOP_K", 500),
             top_n=app.config.get("FUSION_TOP_N", 20),
+            v5=app.config.get("FUSION_V5_ENABLED", False),
+            popularity_alpha=app.config.get("FUSION_V5_POP_ALPHA", 0.5),
+            als_neg_lambda=app.config.get("FUSION_V5_ALS_NEG_LAMBDA", 0.2),
+            als_neg_cap=app.config.get("FUSION_V5_ALS_NEG_CAP", 0.5),
+            recent_window=app.config.get("FUSION_V5_RECENT_WINDOW", 10),
+            genre_quota=app.config.get("FUSION_V5_GENRE_QUOTA", 8),
         )
 
     # 蓝图注册

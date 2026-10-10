@@ -48,6 +48,20 @@ fusion:
 # Flask
 # 注意：port 必须与 frontend/vite.config.js 的 proxy target 保持一致。
 # 本机（Windows）禁止绑定 5000/5001，因此统一使用 8000。
+  # V5 叠加层（EDA 2026-10-10）：差评反馈 + 频率标签 + 热门降权。
+  # enabled=false = 行为与 V4 逐位一致；holdout 消融验证通过后再开。
+  #   popularity_alpha  热门降权指数 final = fused / (pop/median)^alpha（0=关）
+  #   als_neg_lambda    ALS 负反馈罚项系数（0=关）；传播用中心化余弦
+  #   als_neg_cap       单候选罚项上限 = cap × 差评信号总量
+  #   recent_window     "近期"窗口大小（最近 N 条同标签评分）
+  #   genre_quota       高差评标签每页类型配额（0=关）
+  v5:
+    enabled: false
+    popularity_alpha: 0.5
+    als_neg_lambda: 0.2
+    als_neg_cap: 0.5
+    recent_window: 10
+    genre_quota: 8
 flask:
   host: "127.0.0.1"
   port: 8000

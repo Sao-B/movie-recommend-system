@@ -90,3 +90,15 @@ class SqlAlchemyRecommendationRepository:
             movie.movie_id: movie
             for movie in Movie.query.filter(Movie.movie_id.in_(movie_ids)).all()
         }
+
+    def get_movies_genres_map(self, movie_ids):
+        """批量取电影类型集合 {movie_id: set(genre)}（V5 标签路避免逐条查询）。"""
+        movie_ids = list(movie_ids)
+        if not movie_ids:
+            return {}
+        rows = (Movie.query.filter(Movie.movie_id.in_(movie_ids))
+                .with_entities(Movie.movie_id, Movie.genres).all())
+        return {
+            int(mid): {g for g in (genres or "").split("|") if g}
+            for mid, genres in rows
+        }

@@ -72,3 +72,11 @@ class Config:
     FUSION_ALS_MIN_SUPPORT = int(_fusion.get("als_min_support", 1000))
     FUSION_ALS_TOP_K = int(_fusion.get("als_top_k", 500))
     FUSION_TOP_N = int(_fusion.get("top_n", _als.get("top_n", 20)))
+    # V5 叠加层（EDA 2026-10-10；enabled=false 时与 V4 行为逐位一致）
+    _v5 = _fusion.get("v5", {}) or {}
+    FUSION_V5_ENABLED = bool(_v5.get("enabled", False))
+    FUSION_V5_POP_ALPHA = float(_v5.get("popularity_alpha", 0.5))
+    FUSION_V5_ALS_NEG_LAMBDA = float(_v5.get("als_neg_lambda", 0.2))
+    FUSION_V5_ALS_NEG_CAP = float(_v5.get("als_neg_cap", 0.5))
+    FUSION_V5_RECENT_WINDOW = int(_v5.get("recent_window", 10))
+    FUSION_V5_GENRE_QUOTA = int(_v5.get("genre_quota", 8))
