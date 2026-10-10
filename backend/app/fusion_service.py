@@ -169,9 +169,17 @@ class FusionService:
             fpos = {int(v): p for p, v in enumerate(fids)}
             rated_pairs = [(int(row.movie_id), float(row.rating))
                            for row in ratings]
-            rows = [fpos[m] for m, _r in rated_pairs if m in fpos]
+            # V5：负评分（w(r)<0）不进折入——NNLS 拿差评当目标会把整个用户
+            # 向量拽离该类型（e 用户实测：2 条科幻好评 + 1 条 Matrix 差评 ->
+            # Top-20 科幻清零、类型跑飞到喜剧/儿童）。负反馈全部由罚项承担。
+            if self.v5:
+                fold_pairs = [(m, r) for m, r in rated_pairs
+                              if rating_weight(r) >= 0]
+            else:
+                fold_pairs = rated_pairs
+            rows = [fpos[m] for m, _r in fold_pairs if m in fpos]
             if rows:
-                values = [r for m, r in rated_pairs if m in fpos]
+                values = [r for m, r in fold_pairs if m in fpos]
                 try:
                     vec = solve_fold_in(mat[rows], np.asarray(values),
                                         float(model.reg_param))

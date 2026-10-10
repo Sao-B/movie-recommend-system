@@ -290,18 +290,40 @@ def build_user_record(user, segments, relevant, graph, genre_map, factor_pos,
             reg_param)
     als_ids = np.zeros(0, dtype=np.int64)
     als_dot = np.zeros(0, dtype=np.float64)
+    allowed = None
+    if als_min_support > 0 and support_by_movie is not None:
+        allowed = set(m for m, n in support_by_movie.items()
+                      if n >= als_min_support)
     if vector is not None:
-        allowed = None
-        if als_min_support > 0 and support_by_movie is not None:
-            allowed = set(m for m, n in support_by_movie.items()
-                          if n >= als_min_support)
         picked = als_top_k_candidates(vector, factor_movie_ids, factor_matrix,
                                       seen, als_top_k, allowed=allowed)
         if picked:
             als_ids = np.asarray([p[0] for p in picked], dtype=np.int64)
             als_dot = np.asarray([p[1] for p in picked], dtype=np.float64)
 
-    union_ids = np.union1d(r1_ids, als_ids)
+    # V7：折入只用 w(r)>=0 的评分——差评进 NNLS 会把整个用户向量拽离该类型
+    # （部署端 e 用户实测：Top-20 科幻清零、类型跑飞）。负反馈交给罚项。
+    als_pen_ids = np.zeros(0, dtype=np.int64)
+    als_pen_dot = np.zeros(0, dtype=np.float64)
+    if matcn is not None:
+        pairs_p = [(m, r) for m, r in rated
+                   if rating_weight(r) >= 0 and m in factor_pos]
+        if pairs_p:
+            rows_p = [factor_pos[m] for m, _r in pairs_p]
+            values_p = [r for _m, r in pairs_p]
+            vector_pen = solve_user_vector_explicit(
+                factor_matrix[rows_p], np.asarray(values_p, dtype=np.float64),
+                reg_param)
+            picked_pen = als_top_k_candidates(
+                vector_pen, factor_movie_ids, factor_matrix, seen,
+                als_top_k, allowed=allowed)
+            if picked_pen:
+                als_pen_ids = np.asarray([p[0] for p in picked_pen],
+                                         dtype=np.int64)
+                als_pen_dot = np.asarray([p[1] for p in picked_pen],
+                                         dtype=np.float64)
+
+    union_ids = np.union1d(np.union1d(r1_ids, als_ids), als_pen_ids)
     n = union_ids.shape[0]
     u_sum = np.zeros(n, dtype=np.float64)
     u_cnt = np.zeros(n, dtype=np.float64)
@@ -354,9 +376,11 @@ def build_user_record(user, segments, relevant, graph, genre_map, factor_pos,
         if matched:
             u_label[pos] = max(fw * sig for fw, sig in matched)
 
-    # V7：ALS 负反馈罚项（评分差评 w(r)<0，中心化余弦传播，单项上限钳制）
-    u_als_pen = u_als.copy()
-    if matcn is not None and als_ids.shape[0]:
+    # V7 的 ALS 列：正评分折入 + 负反馈罚项（中心化余弦传播，单项上限钳制）
+    u_als_pen = np.full(n, np.nan, dtype=np.float64)
+    if als_pen_ids.shape[0]:
+        at_pen = np.searchsorted(union_ids, als_pen_ids)
+        dots = als_pen_dot.copy()
         neg_pairs = [(m, rating_weight(r)) for m, r in rated
                      if rating_weight(r) < 0 and m in factor_pos]
         if neg_pairs:
@@ -365,12 +389,13 @@ def build_user_record(user, segments, relevant, graph, genre_map, factor_pos,
             neg_w = np.asarray([-w for _m, w in neg_pairs],
                                dtype=np.float64)
             cap = V5_ALS_NEG_CAP * float(neg_w.sum())
-            fac_rows = np.asarray([factor_pos[int(m)] for m in als_ids.tolist()],
+            fac_rows = np.asarray([factor_pos[int(m)]
+                                   for m in als_pen_ids.tolist()],
                                   dtype=np.int64)
             sim_mat = matcn[fac_rows] @ matcn[neg_rows].T
             pen = V5_ALS_NEG_LAMBDA * (np.clip(sim_mat, 0.0, None) @ neg_w)
-            at_pen = np.searchsorted(union_ids, als_ids)
-            u_als_pen[at_pen] -= np.minimum(pen, cap)
+            dots -= np.minimum(pen, cap)
+        u_als_pen[at_pen] = dots
 
     # V8 热度：训练段全量评分数（未提供的电影记 0）
     u_pop = None

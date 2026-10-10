@@ -67,13 +67,15 @@ class BuildRecordV5FieldTests(unittest.TestCase):
         self.assertAlmostEqual(record["u_label"][at102], 0.0, places=9)
         self.assertTrue(np.isnan(record["u_label"][u_ids.index(104)]))
 
-        # u_als_pen：102 与 105 中心化余弦=1 -> 罚 0.2*1.2=0.24；104 近正交 -> 0
-        at105 = u_ids.index(105) if 105 in u_ids else None
+        # u_als_pen：V7 语义 = 正评分折入（101,5.0 -> vec_x=5/1.1）+ 罚项
+        # 102 与 105 中心化余弦=1 -> 罚 0.2*1.2=0.24；104 近正交 -> 0
         als_by_id = dict(zip(u_ids, record["u_als"].tolist()))
         pen_by_id = dict(zip(u_ids, record["u_als_pen"].tolist()))
-        self.assertAlmostEqual(pen_by_id[102],
-                               als_by_id[102] - 0.2 * 1.2, places=9)
-        self.assertAlmostEqual(pen_by_id[104], als_by_id[104], places=9)
+        expected_102 = 5.0 / 1.1 - 0.2 * 1.2     # 正评分折入点积 - 罚项
+        self.assertAlmostEqual(pen_by_id[102], expected_102, places=9)
+        self.assertAlmostEqual(pen_by_id[104], 0.97 * 5.0 / 1.1, places=9)
+        # V4/V6 用的 u_als 仍是全评分折入（负分进目标），两者必须不同
+        self.assertNotAlmostEqual(pen_by_id[102], als_by_id[102], places=3)
         self.assertNotIn(105, u_ids)   # 105 已看，不在候选中
 
         # u_pop：训练段全量评分数
