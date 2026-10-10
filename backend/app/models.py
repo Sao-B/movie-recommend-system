@@ -1,3 +1,6 @@
+"""User-oriented ORM models."""
+
+import json
 from datetime import datetime, timezone
 from werkzeug.security import generate_password_hash, check_password_hash
 from .db import db
@@ -28,8 +31,30 @@ class User(db.Model):
     #: 昵称（展示用）：任意字符、不唯一、可空；为空时显示回落 ``username``（见 ``display_name``）。
     #: 账号 ``username`` 只用于登录与标识，注册后不可改，改的是这一列（migrations/011 新增）。
     nickname      = db.Column(db.String(50))
+    #: 用户自选偏好类型（migrations/014）：JSON 数组字符串，最多 5 个。
+    #: NULL = 从未选过（前端首次弹窗）；'[]' = 明确跳过过（不再弹）。
+    favorite_genres = db.Column(db.String(255))
     created_at    = db.Column(db.DateTime, default=_utcnow)
     role          = db.Column(db.String(16), nullable=False, default='user', server_default='user')
+
+    @property
+    def favorite_genre_list(self):
+        """解析偏好类型为列表；NULL 返回 None（区分"没选过"），空串返回 []。"""
+        raw = self.favorite_genres
+        if raw is None:
+            return None
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if isinstance(value, list) else None
+
+    def set_favorite_genres(self, genres):
+        """写入偏好类型（list[str] 或 None）；序列化失败/非列表按 None 处理。"""
+        if genres is None:
+            self.favorite_genres = None
+        else:
+            self.favorite_genres = json.dumps(list(genres), ensure_ascii=False)
 
     def set_password(self, password: str):
         self.password_hash = generate_password_hash(password)
@@ -59,6 +84,8 @@ class User(db.Model):
             "role": self.role,
             "avatar_url": self.avatar_url,
             "bio": self.bio,
+            "favorite_genres": self.favorite_genre_list,
+            "needs_onboarding": self.favorite_genre_list is None,
             "created_at": _to_iso_utc(self.created_at)
         }
 
@@ -75,10 +102,14 @@ class Movie(db.Model):
     poster_url   = db.Column(db.String(500))
     overview     = db.Column(db.Text)
     director     = db.Column(db.String(500))
-    writers      = db.Column(db.Text)
+    # 宽度必须与 sql/schema.sql 一致：migrations/009 把这三列加宽到 VARCHAR(500)，
+    # 原因是 countries 实测最长 258 字符，fetch_posters.py 按 500 截断后写入，
+    # 若 ORM 仍声明 String(200)，用 create_all() 建库会重新建出过窄的列，
+    # 直接撞上 fetch_posters.py 的 "Data too long"（009 迁移修的就是这个）。
+    writers      = db.Column(db.String(500))
     cast         = db.Column(db.Text)
-    countries    = db.Column(db.String(200))
-    languages    = db.Column(db.String(200))
+    countries    = db.Column(db.String(500))
+    languages    = db.Column(db.String(500))
     release_date = db.Column(db.Date)
     runtime      = db.Column(db.SmallInteger)
 
@@ -244,4 +275,29 @@ class MovieRatingStats(db.Model):
             3: self.cnt_3 or 0,
             2: self.cnt_2 or 0,
             1: self.cnt_1 or 0,
+        }
+
+
+class UserDislike(db.Model):
+    """用户标记"不感兴趣"的电影（migrations/014）。
+
+    推荐链路把它当作**硬排除**集合——标记过的电影不再出现在任何推荐结果里，
+    与"看过"（user_ratings）同级的负向排除；不参与打分加权。
+    """
+
+    __tablename__ = "user_dislikes"
+
+    id         = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user_id    = db.Column(db.Integer, nullable=False, index=True)
+    movie_id   = db.Column(db.Integer, nullable=False, index=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=_utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint("user_id", "movie_id", name="uq_user_movie"),
+    )
+
+    def to_dict(self):
+        return {
+            "movie_id": self.movie_id,
+            "created_at": _to_iso_utc(self.created_at),
         }

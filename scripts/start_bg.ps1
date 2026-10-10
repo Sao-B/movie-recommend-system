@@ -8,7 +8,8 @@
 # Flow:
 #   1. kill leftovers from an earlier run (logs\*.pid, then the listening ports)
 #   2. start backend (backend\venv python) + frontend (node vite), both hidden
-#   3. wait until the frontend port accepts connections, then open the browser
+#   3. wait for GET /api/health to answer OK, warm up the home page query, then
+#      wait for the frontend port and open the browser (why: see step 4 below)
 #   4. spawn a hidden watchdog (this same script, -WatchMinutes/-WatchPids) that
 #      stops both processes when the TTL expires -> no stop script needed
 #
@@ -132,8 +133,52 @@ Set-Content -Path (Join-Path $logDir 'vue.pid') -Value $vue.Id
 Write-Host ("Backend  pid {0}  log: logs\flask.log" -f $backend.Id)
 Write-Host ("Frontend pid {0}  log: logs\vue.log" -f $vue.Id)
 
-# ---------- 4. open the browser once the frontend answers (max 90s) ----------
+# ---------- 4. wait for the BACKEND, then the frontend, then open the browser --
+# Vite answers in a couple of seconds, but Flask can take ~20s on a cold start
+# (first run after a reboot: the OS still has to fault in python + all the DLLs).
+# Opening the browser as soon as 5173 listened made the home page fire
+# /api/movies/ into a proxy that had nothing to forward to (ECONNREFUSED in
+# logs\vue.err.log), so the list stayed empty until a manual refresh.
+# So: poll /api/health until it is ok, warm the home page query, then open.
+$healthUrl = "http://127.0.0.1:$flaskPort/api/health"
+$warmUrl = "http://127.0.0.1:$flaskPort/api/movies/?page=1&per_page=24&sort=popular"
 $frontUrl = 'http://localhost:5173'
+
+function Test-BackendReady {
+    try {
+        $resp = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 5
+        return ($resp.StatusCode -eq 200)
+    } catch {
+        return $false
+    }
+}
+
+$waitClock = [System.Diagnostics.Stopwatch]::StartNew()
+$backendReady = $false
+$waited = 0
+while (-not $backendReady -and $waited -lt 180) {
+    if (Test-BackendReady) {
+        $backendReady = $true
+        break
+    }
+    Start-Sleep -Seconds 1
+    $waited++
+    if ($waited % 5 -eq 0) { Write-Host ("  waiting for backend ({0}s)..." -f $waited) }
+}
+if ($backendReady) {
+    Write-Host ("Backend ready in {0:N1}s" -f $waitClock.Elapsed.TotalSeconds)
+    # Warm the first real query too: the very first /api/movies/ costs ~1.3s
+    # (cold plan + buffer pool), the same query right after is ~0.12s.
+    try {
+        Invoke-WebRequest -Uri $warmUrl -UseBasicParsing -TimeoutSec 30 | Out-Null
+        Write-Host ("Warmed up home page query (+{0:N1}s)" -f $waitClock.Elapsed.TotalSeconds)
+    } catch {
+        Write-Host "Warmup request failed; home page still works, first load just slower"
+    }
+} else {
+    Write-Host "Backend not ready after 180s; check logs\flask.err.log"
+}
+
 $ready = $false
 for ($i = 0; $i -lt 90 -and -not $ready; $i++) {
     try {

@@ -1019,7 +1019,7 @@ backend/venv/Scripts/python.exe scripts/build_ratings_clean.py --check   # 与�
  3. 打印两套用户 ID 的取值区间（取负方案天然隔离，只记录不校验）
  4. MovieLens userId 取负（-userId → int）
  5. JDBC 子查询读取 user_ratings，并与 users 半连接（只留真实系统用户）
- 6. MovieLens 评分按 train_ratio=0.8 随机划分（seed=42）
+ 6. MovieLens 评分按 train_ratio=0.8 **哈希确定性划分**（md5(userId:movieId) 分桶，与分区数无关）
  7. combine_rating_sources：MovieLens 训练集 ∪ 系统用户全部评分
  8. 训练非负显式反馈 ALS
  9. 只用 MovieLens 测试集计算 RMSE（口径稳定，不受系统用户影响）
@@ -1064,8 +1064,10 @@ ratings_system = (
     .join(registered_users.withColumnRenamed("user_id", "userId"), "userId", "left_semi")
 )
 
-# 8:2 划分 + 合并训练集
-ml_train, ml_test = ratings_ml.randomSplit([0.8, 0.2], seed=42)
+# 8:2 划分（确定性哈希，见 training_contract.split_ratings_for_eval）+ 合并训练集
+# 取代了早期的 ratings_ml.randomSplit([0.8, 0.2], seed=42)：后者按分区内 RNG 抽样，
+# 换分区数就会得到不同的训练/测试集，同一份数据复现不出同一批数字。
+ml_train, ml_test = split_ratings_for_eval(ratings_ml, float(als_cfg["train_ratio"]))
 training_ratings = combine_rating_sources(ml_train, ratings_system).cache()
 ```
 
@@ -1238,11 +1240,17 @@ def rank_unrated_items(movie_ids, item_factors, user_vector, rated_movie_ids, to
 class OnlineRecommendationService:
     """Calculate recommendations for one application user without retraining ALS."""
 
+    # 2026-10-01：候选集门槛（原 min_rating_count / IDENTIFIABILITY_MIN_RATINGS=50）
+    # 已整体移除，构造函数不再接收该参数，候选集回到全量因子。
     def __init__(self, repository, top_n=20):
         self.repository = repository            # SqlAlchemyRecommendationRepository
         self.top_n = int(top_n)
         self._factor_cache = {}                 # {model_version: {movie_id: np.ndarray}}
         self._cache_lock = RLock()              # 多线程下防重复构建缓存
+
+    def _candidate_movie_ids(self, factors):
+        """候选集：全量已训练出因子的电影（门槛已移除，详见方法 docstring）"""
+        return sorted(factors)
 
     def _load_factors(self, model):
         """按版本缓存电影因子；维度不等于 model.rank 或含非有限值 → ValueError → 降级"""
@@ -1256,27 +1264,57 @@ class OnlineRecommendationService:
             np.asarray(rated_factors), np.asarray(rated_values),
             reg_param=float(model.reg_param),
         )
+        # 候选集门槛已移除（2026-10-01），直接对全量因子批量打分排序（见 6.3.1）
+        all_movie_ids = self._candidate_movie_ids(factors)
         ranked = rank_unrated_items(all_movie_ids, all_factors, user_vector,
                                     set(rated_movie_ids), self.top_n)
         # 补齐电影详情（批量 IN 查询，缺元数据同样视为异常 → 降级）
         ...
 
     def get_for_user(self, user_id):
-        """入口：在线优先，批量兜底"""
+        """入口：在线优先 → 批量推荐 → 高分热门兜底"""
         model = self.repository.get_active_model()          # status='active' 最新一条
-        if model is None:
-            return []                                       # 无 active 模型 → 空列表
-        ratings = self.repository.get_user_ratings(user_id)
+        ratings = self.repository.get_user_ratings(user_id) if model else []
         if not ratings:
-            return self._batch(user_id, str(model.version)) # 新用户 → 批量推荐
-        try:
-            return self._online_recommendations(user_id, model, ratings)
-        except Exception:
-            logger.exception("online recommendation failed for user_id=%s", user_id)
-            return self._batch(user_id, str(model.version)) # 任何失败 → 批量推荐
+            recs = self._batch(user_id, str(model.version) if model else None)
+        else:
+            try:
+                recs = self._online_recommendations(user_id, model, ratings)
+            except Exception:
+                logger.exception("online recommendation failed for user_id=%s", user_id)
+                recs = self._batch(user_id, str(model.version))  # 任何失败 → 批量推荐
+        return recs if recs else self._popular_recommendations()  # 最后兜底：高分热门
 ```
 
-仓储接口（`SqlAlchemyRecommendationRepository`）：`get_active_model()`、`get_user_ratings(user_id)`（读 `user_ratings`）、`get_model_factors(version)`、`get_batch_recommendations(user_id, version)`（joinedload 电影详情）、`get_movies(movie_ids)`。
+#### 6.3.1 ~~为什么候选集要卡热度门槛~~【已废弃，2026-10-01 门槛已移除】
+
+> **⚠️ 本节描述的门槛已从代码中整体删除**，`als.min_rating_count`、`ALS_MIN_RATING_COUNT`、
+> `IDENTIFIABILITY_MIN_RATINGS`、`get_movie_ids_with_min_ratings()` 均不存在，
+> 在线推荐现在对**全量因子**排序。下表保留作历史记录。
+>
+> **为什么删**：门槛的两代理由都不成立——第一代"冷门片不该推荐"是**流行度先验**，
+> 等于人为假设"大众爱看 = 用户爱看"，而流行度与个人偏好几乎无关；第二代改为
+> "可辨识性下限"（$n_i \geq rank$）虽有统计依据，但它是**在排序阶段堵症状**，
+> 而问题的根源在**训练阶段**（低 support 物品的因子本身没有信息，秩不足）。
+> 当前决定推倒重做数据建模部分，因此把该补丁一并清除，回到全量排序的干净基线。
+>
+> **代价要认**：删门槛后，Top-N 头部会重新被评分人数个位数的冷门片占据
+> （即下表第一行的现象），这是**已知且暂时接受**的状态。
+
+ALS 对每个 item 的正则项是一样的，评分个数位数的电影其因子几乎是"未训练"状态，
+范数偏大且方向随机；与用户向量点积后分数能到 8~11（正常片 4~5），于是 Top-N
+头部被这些冷门片占满。实测（active 模型 `als-20260915…`，rank=50）：
+
+| 候选集 | 用户画像 | Top-8 结果 |
+|--------|----------|-----------|
+| 全库 80,194 部 | 5 部科幻高分 +《恋恋笔记本》0.5 星 | 全是评分人数 1~6 的冷门片，预测分全部顶格 5.0 |
+| 评分人数 ≥ 1000（4,397 部） | 同上 | 复联 3/4、银河护卫队、雷神 3、疯狂麦克斯 4 等科幻动作片 |
+| 评分人数 ≥ 1000（4,397 部） | 同 5 部科幻高分 | 肖申克、兄弟连、搏击俱乐部、非常嫌疑犯、地球脉动 |
+
+~~门槛由 `als.min_rating_count` 配置（默认 1000，置 0 关闭）。筛选后不足 `top_n` 时
+回退全量，保证推荐列表不会因为配置过严而变空。~~
+
+仓储接口（`SqlAlchemyRecommendationRepository`）：`get_active_model()`、`get_user_ratings(user_id)`（读 `user_ratings`）、`get_model_factors(version)`、`get_batch_recommendations(user_id, version)`（joinedload 电影详情）、`get_movies(movie_ids)`、`get_popular_movies(limit, min_rating_count=50)`（冷启动兜底）。~~`get_movie_ids_with_min_ratings(min_rating_count)`（候选集门槛）~~ 已随门槛一并删除。
 
 服务在 `create_app()` 中构建为**应用级单例**，挂载到 `app.extensions["recommendation_service"]`，路由直接取用（见 7.3）。
 
@@ -1284,10 +1322,10 @@ class OnlineRecommendationService:
 
 | 情况 | 行为 |
 |------|------|
-| 无 active 模型 | 返回空列表（前端显示空状态，属正常） |
+| 无 active 模型 | 走批量推荐（version=None 时为空），再兜底高分热门 |
 | 用户无评分 | 返回当前 active 版本的批量推荐 |
 | 因子缺失 / rank 不符 / JSON 损坏 / NNLS 异常 / 电影元数据缺失 | 记日志，回退批量推荐 |
-| 批量推荐也没有 | 返回空列表 |
+| 批量推荐也没有 | 全站高分热门电影（`avg_rating` 降序、评分人数 ≥ 50） |
 
 ---
 
@@ -1342,6 +1380,7 @@ def create_app(config_obj=None):
     JWTManager(app)
 
     # 在线推荐服务：应用级单例，避免多线程重复构建因子缓存
+    # 2026-10-01：候选集门槛已移除，不再传 min_rating_count
     app.extensions["recommendation_service"] = OnlineRecommendationService(
         SqlAlchemyRecommendationRepository(),
         top_n=app.config.get("ALS_TOP_N", 20),
@@ -1358,7 +1397,7 @@ def create_app(config_obj=None):
     return app
 ```
 
-配置（`config.py`）全部来自根目录 `config.yaml`：`SQLALCHEMY_DATABASE_URI = mysql+pymysql://...`、`JWT_SECRET_KEY = flask.secret_key`、`CORS_ORIGINS = cors.origins`、`ALS_TOP_N = als.top_n`、`ALS_REG_PARAM = als.reg_param`。
+配置（`config.py`）全部来自根目录 `config.yaml`：`SQLALCHEMY_DATABASE_URI = mysql+pymysql://...`、`JWT_SECRET_KEY = flask.secret_key`、`CORS_ORIGINS = cors.origins`、`ALS_TOP_N = als.top_n`、`ALS_REG_PARAM = als.reg_param`。~~`ALS_MIN_RATING_COUNT = als.min_rating_count`（在线候选集热度门槛，默认 1000）~~ **已随门槛一并删除（2026-10-01）**。
 
 ### 7.4 关键路由实现
 
@@ -1431,6 +1470,7 @@ def get_recommendations():
 
 | 方法 | 路径 | 说明 | 鉴权 |
 |---|---|---|---|
+| `GET` | `/api/health` | 健康探针（`{"status":"ok","database":"up"}`，库连不上 503 `degraded`）；`start.bat` 等它通过才开浏览器 | 否 |
 | `POST` | `/api/auth/register` | 注册并返回 JWT + 用户信息（账号 3-20 位，只允许字母 / 数字 / 下划线 / 连字符，规则见 `app/account_rules.py`；昵称初始等于账号） | 否 |
 | `POST` | `/api/auth/login` | 登录（`username` 字段填账号或用户 ID；纯数字时先按账号精确查、没有才按 ID 查，见 `auth._find_user`） | 否 |
 | `GET` | `/api/movies/` | 分页、关键词（`q`：`ID318` / `id318` 只按电影 ID 精确命中——前缀大小写随意、数字须紧挨着；纯数字宽匹配片名 / 简介且 ID 那条最前；文字命中片名 / 简介。规则见 `app/movie_search.py`）、类型、年份筛选；sort=popular/latest/movie_id | 否 |
@@ -1451,6 +1491,9 @@ def get_recommendations():
 | `GET` | `/api/profile/avatar/<filename>` | 读取历史上传的头像图片本身（文件名带随机串，故不鉴权） | 否 |
 | `GET` | `/api/profile/stats` | 观影统计（评分分布、最爱类型/导演） | 是 |
 | `GET` | `/api/profile/comments` | 我的评论（分页排序，附带我在该片评分的星级） | 是 |
+| `POST` | `/api/dislikes/` | 标记电影"不感兴趣"（幂等；所有推荐链路硬排除） | 是 |
+| `DELETE` | `/api/dislikes/<movie_id>` | 取消标记（幂等） | 是 |
+| `GET` | `/api/dislikes/` | 我的全部标记：`movie_ids` 纯 ID 列表 + `items`（`{movie_id,title,year,genres}`，个人主页偏好卡直接渲染） | 是 |
 | `GET` | `/api/admin/stats` | 系统统计（用户/电影/评分/推荐量、active 模型） | admin |
 | `GET/POST/PATCH/DELETE` | `/api/admin/users[...]` | 用户管理 | admin |
 | `GET/PATCH/DELETE` | `/api/admin/movies[...]` | 电影管理 | admin |
@@ -1459,7 +1502,7 @@ def get_recommendations():
 
 ### 7.5 启动后端
 
-**Windows（开发机）**：项目根目录 `start.bat`（经 `scripts/start_bg.ps1` 以隐藏窗口后台启动 Flask + Vite，日志与 PID 落在 `logs\`，启动后自动打开浏览器、默认 4 小时后自动停止，没有停止脚本；优先用 `backend/venv`，失效时回退系统 Python），或前台 `python scripts/start_backend.py`。
+**Windows（开发机）**：项目根目录 `start.bat`（经 `scripts/start_bg.ps1` 以隐藏窗口后台启动 Flask + Vite，日志与 PID 落在 `logs\`，**先轮询 `GET /api/health` 等后端就绪、并把首页那次查询打热，再打开浏览器**，默认 4 小时后自动停止，没有停止脚本；优先用 `backend/venv`，失效时回退系统 Python），或前台 `python scripts/start_backend.py`。
 
 **Linux（服务器）**：
 ```bash
@@ -1518,7 +1561,11 @@ const routes = [
   { path: '/login', component: LoginView },
   { path: '/register', component: RegisterView },
   { path: '/movies/:id', component: MovieDetailView },
-  { path: '/recommendations', component: RecommendationsView, meta: { requiresAuth: true } },
+  { path: '/recommendations', redirect: '/recommendations/als' },
+  // 三条推荐链路各有独立网址，模型取自 route.params.model
+  { path: '/recommendations/:model(als|itemcf|fusion)', name: 'recommendation-model',
+    component: RecommendationsView, meta: { requiresAuth: true } },
+  { path: '/recommendations/:model', redirect: '/recommendations/als' },  // 其它模型名回 ALS
   { path: '/profile', component: ProfileView, meta: { requiresAuth: true } },
   { path: '/admin', component: AdminLayout, redirect: '/admin/dashboard',
     meta: { requiresAuth: true, requiresAdmin: true },
@@ -1585,8 +1632,8 @@ export const useAuthStore = defineStore('auth', () => {
 - **电影浏览**（HomeView）：分页 + 搜索（`q` 支持四种输入，见 `backend/app/movie_search.py`：`ID318` / `id318` 只按电影 ID 精确命中、纯数字 `318` 宽匹配片名 / 简介且 ID 那条排最前、文字命中片名、文字命中简介）/类型/年份筛选 + 排序（popular 的「评分人数 ≥ 100」门槛只在**无搜索词**时生效，带搜索词时不过滤，否则冷门片搜不到）；
 - **电影详情**（MovieDetailView）：海报、简介、导演、演员、国家、语言、片长（标题下方用浅灰小字标出**电影 ID**，方便照抄成 `id318` 去精确搜索；「剧情简介」标题 20px、正文 18px）；评分统计显示**评分人数**（MovieLens 与本站合并后的 `count`）、平均分与五档分布；录入区里**显示名（昵称优先、回落账号）+ 半星评分控件在评论框上方**（0.5~5.0，控件不可清零，点同一颗星两次不会变 0），评分与影评**必须同时填写**才能点得动「发表」；发表后表单收起、原输入框的位置由自己的影评顶替（置顶），**没有「修改」按钮**——改正文和改评分都走卡片上的「编辑」（展示态的星星一律只读，本人他人的都点不动；在编辑区里改完星星要点「保存」才落库），同一时刻全页只许一条影评处于编辑态，置顶那条与时间线里同名那条互斥（其余卡片的操作——「编辑」和「删除」——全部禁用且整卡压暗）；置顶展示块与时间线之间有一条分割线；时间只在卡片底部显示一处（「发布于 …」+ 改过正文才有的「上次修改于 …」）；删除只有一个入口（影评卡片上的「删除」），确认框问「这条影评草稿要保留吗」——保留＝只删评分（`DELETE` 把 `user_ratings` 那一行硬删除，影评退成仅自己可见），不保留＝两行一起删、置顶那块变回输入框；评论区（时间倒序、分页、显示评论者星级）；影评卡片左侧一律带**作者头像**（`comment.avatar_url`，为空则回落成显示名首字符，见 `UserAvatar.vue`）；改评分或影评未提交就离开会弹确认框；
 - **注册 / 登录**（RegisterView / LoginView）：账号限 3-20 位字母 / 数字 / 下划线 / 连字符（前端校验与 `app/account_rules.py` 同一套正则）；登录框的「账号 / ID」两样都收；昵称在个人主页改，注册时不填；
-- **个人主页**（ProfileView）：点昵称就地改（任意字符，含中文；清空即回落显示账号），账号与 ID 在昵称下方只读展示——账号不可改，用 ID 也能登录；点头像打开 `AvatarPicker`（内置 SVG 网格 + 恢复默认，点一下即调 `PUT /api/profile/info` 落库，`avatar_url` 为 `null` 表示默认头像）；
-- **推荐页**（RecommendationsView）：星级推荐指数（ALS 预测分归一化到 0.5~5.0）；无 active 模型时显示空状态（正常现象）；
+- **个人主页**（ProfileView）：点昵称就地改（任意字符，含中文；清空即回落显示账号），账号与 ID 在昵称下方只读展示——账号不可改，用 ID 也能登录；点头像打开 `AvatarPicker`（内置 SVG 网格 + 恢复默认，点一下即调 `PUT /api/profile/info` 落库，`avatar_url` 为 `null` 表示默认头像）；资料卡下方是**偏好设置**卡——上半区"喜欢的电影类型"（标签 + 右侧主色「修改偏好」按钮，打开与首次引导共用的 `GenrePickerDialog`，保存即写 `favorite_genres`），下半区"不感兴趣的电影"（进页拉 `GET /api/dislikes/` 的 `items`，一行一部：片名可点进详情 + 类型标签 + 「取消标记」，**经 `ElMessageBox.confirm` 二次确认后**调 `DELETE /api/dislikes/<movie_id>`，列表就地移除）；
+- **推荐页**（RecommendationsView）：星级推荐指数（ALS 预测分归一化到 0.5~5.0）；卡片右上角（内容区、与年份行齐平）有常驻的横向**实心**三点「更多操作」按钮（无底色、融进卡片，悬停染 `--el-color-primary`；`dismissible` 才渲染，即推荐页专用），点开下拉菜单里的**红色**「不感兴趣」→ **两段式就地确认，不再弹浮窗**：第一下只把该项变红加粗成「确定吗？」（`:hide-on-click="false"` 让菜单不自动收起，点了别处由 `visible-change` 复位），第二下才 `POST /api/dislikes/` + 从当前列表移除；**三条链路各有一个独立网址**（`/recommendations/als` | `/itemcf` | `/fusion`，模型取自 `route.params.model`，非法值回落 ALS；老链接 `/recommendations` 重定向到 `/recommendations/als`），点切换按钮即 `router.push`，刷新、新开标签、分享链接都停在同一路推荐上；无 active 模型时显示空状态（正常现象）；
 - **管理后台**（/admin）：统计数据、用户/电影/评分/模型管理，非 admin 访问静默跳回首页。
 
 ### 8.7 Vite 配置（`vite.config.js`）
@@ -1839,9 +1886,10 @@ Spark 侧无需 pip 依赖（集群 spark-submit 提供 PySpark），另需 MySQ
 ### C. 测试与静态验证
 
 ```bash
-python -m unittest discover -s tests -v        # 166 个用例：训练契约、评分表契约、
+python -m unittest discover -s tests -v        # 902 个用例：训练契约、评分表契约、
                                                # 评分统计、影评全链路、详情页 UI 契约、
-                                               # 在线推荐、模型生命周期、SQL 契约等
+                                               # 在线推荐、模型生命周期、SQL 契约、
+                                               # 用户偏好/不感兴趣、ItemCF 实验工具等
 python -m compileall -q backend spark scripts  # 语法检查
 npm run build --prefix frontend                # 前端构建
 git diff --check                               # 空白错误

@@ -12,18 +12,11 @@
         </router-link>
         <template v-if="auth.isLoggedIn">
           <ThemeSwitch />
-          <el-dropdown
-            @command="handleCommand"
-            trigger="hover"
-            @visible-change="dropdownVisible = $event"
-          >
+          <el-dropdown @command="handleCommand" trigger="hover">
             <span class="username-dropdown">
               <!-- 头像与个人主页同一套：无头像图时显示昵称首字符；显示名一律用 displayName（昵称优先、回落账号） -->
               <UserAvatar :src="auth.user?.avatar_url" :name="auth.displayName" :size="28" />
               {{ auth.displayName }}
-              <el-icon class="el-icon--right arrow-icon" :class="{ 'is-open': dropdownVisible }">
-                <arrow-down />
-              </el-icon>
             </span>
             <template #dropdown>
               <el-dropdown-menu>
@@ -49,11 +42,11 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowDown, User, SwitchButton } from '@element-plus/icons-vue'
+import { User, SwitchButton } from '@element-plus/icons-vue'
 import ThemeSwitch from '@/components/ThemeSwitch.vue'
 import UserAvatar from '@/components/UserAvatar.vue'
 
@@ -62,7 +55,6 @@ const router = useRouter()
 const route  = useRoute()
 // 管理后台是全宽双栏布局，header 内容不再收进 1200px 容器，避免与侧栏错位
 const isAdminRoute = computed(() => route.path.startsWith('/admin'))
-const dropdownVisible = ref(false)
 
 function handleCommand(command) {
   switch (command) {
@@ -129,6 +121,7 @@ function handleLogout() {
 }
 .admin-link:hover { color: #f0a020; }
 
+/* 头像 + 显示名，本身就是下拉的触发区；不再另挂一个小箭头图标 */
 .username-dropdown {
   font-size: 14px;
   color: var(--app-text);
@@ -144,15 +137,5 @@ function handleLogout() {
 .username-dropdown:hover {
   background-color: var(--app-fill);
   color: #409eff;
-}
-
-.username-dropdown .arrow-icon {
-  transform-origin: center;
-  transition: transform 0.3s ease;
-}
-
-/* 收起时箭头朝下，展开时翻转上来 */
-.username-dropdown .arrow-icon.is-open {
-  transform: rotate(180deg);
 }
 </style>

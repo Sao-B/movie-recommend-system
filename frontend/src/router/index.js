@@ -7,12 +7,16 @@ const routes = [
   { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue') },
   { path: '/register', name: 'register', component: () => import('@/views/RegisterView.vue') },
   { path: '/movies/:id', name: 'movie-detail', component: () => import('@/views/MovieDetailView.vue') },
+  // 三条推荐链路各自一个网址，老链接 /recommendations 落到 ALS
+  { path: '/recommendations', name: 'recommendations', redirect: '/recommendations/als' },
   {
-    path: '/recommendations',
-    name: 'recommendations',
+    path: '/recommendations/:model(als|itemcf|fusion)',
+    name: 'recommendation-model',
     component: () => import('@/views/RecommendationsView.vue'),
     meta: { requiresAuth: true },
   },
+  // 网址里写了别的模型名时回 ALS，避免白屏
+  { path: '/recommendations/:model', redirect: '/recommendations/als' },
   {
     path: '/profile',
     name: 'profile',

@@ -71,3 +71,22 @@ docs/online-recommendation-audit.md
 
 # 工具脚本已改为经 config_loader.py 从 config.yaml 读取凭据，不再含敏感信息，
 # 因此正常纳入版本库。此前把它们写进这里无效——gitignore 管不了已跟踪的文件。
+
+# 实验产物（模型目录/评估输出，体积大且可再生）
+experiments/itemcf/out/
+experiments/pilot/out/
+
+# 本地临时目录与杂物（不入库）
+.tmp_*/
+.vmwork/
+.workbuddy/
+.recovery_backup_*/
+.ssh_known_hosts
+nul
+tmpkhzwwfss/
+_verify_*_tmp/
+tests/_*_tmp/
+frontend/vite.config.js.timestamp-*.mjs
+_corrupt_backup.txt
+_probe_*.py
+/1.md

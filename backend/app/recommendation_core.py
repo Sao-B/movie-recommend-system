@@ -17,6 +17,24 @@ def clamp_rating(value):
     return max(RATING_MIN, min(RATING_MAX, float(value)))
 
 
+def effective_reg_param(reg_param: float, n_ratings: int) -> float:
+    """把 ``reg_param`` 换算成 MLlib 口径下的等效正则强度。
+
+    Spark MLlib 自 SPARK-2085 起，ALS 每一步求解的正则都按该行/列的评分数缩放::
+
+        val regParam = numRatings(index) * lambda      // MLlib 内部
+
+    也就是说训练时学到物品因子所用的目标是
+    ``min ||X_i p_i - r_i||^2 + (lambda * n_i) ||p_i||^2``。
+    在线 fold-in 必须解**同一个**目标，否则复用了已训练因子、却在一个不同的
+    目标下求用户向量，解出的向量与物品因子不在同一尺度上（实测余弦相似度
+    中位数仅 0.741，即两个"最优解"方向差 25% 以上）。
+
+    这里返回的就是 ``lambda * n_u``，调用方取平方根拼进增广矩阵。
+    """
+    return float(reg_param) * int(n_ratings)
+
+
 def solve_user_vector(
     item_factors: np.ndarray,
     ratings: np.ndarray,
@@ -24,8 +42,16 @@ def solve_user_vector(
 ) -> np.ndarray:
     """Solve the fixed-item ALS user step，非负约束（与离线训练一致）。
 
-    把 ``sqrt(reg_param) * I`` 纵向拼到因子矩阵、把对应评分补 0，等价于带 L2 正则的
-    最小二乘；交给 ``nnls`` 解就能顺带满足非负约束。
+    正则强度按评分数缩放（``reg_param * n_ratings``），与 MLlib 的
+    ``numRatings(index) * lambda`` 对齐，见 :func:`effective_reg_param`。
+
+    把 ``sqrt(lambda_eff) * I`` 纵向拼到因子矩阵、把对应评分补 0，等价于带 L2
+    正则的最小二乘；交给 ``nnls`` 解就能顺带满足非负约束。
+
+    注意：**这里不能再用固定的 ``sqrt(reg_param)``**。那样相当于假设"无论用户评了
+    多少部，正则强度都一样"，对只有寥寥数条评分的用户而言正则相对过弱，解出的
+    向量模长会失控（实测中位数 4.10，而全库物品因子模长中位数仅 1.56），点积随之
+    溢出评分量纲上界。
     """
     factors = np.asarray(item_factors, dtype=float)
     values = np.asarray(ratings, dtype=float)
@@ -39,7 +65,8 @@ def solve_user_vector(
         raise ValueError("reg_param must be nonnegative")
 
     rank = factors.shape[1]
-    regularizer = np.sqrt(reg_param) * np.eye(rank)
+    lambda_eff = effective_reg_param(reg_param, factors.shape[0])
+    regularizer = np.sqrt(lambda_eff) * np.eye(rank)
     augmented_factors = np.vstack((factors, regularizer))
     augmented_ratings = np.concatenate((values, np.zeros(rank)))
 

@@ -73,6 +73,12 @@ class FakeRepository:
     def get_movies(self, movie_ids):
         return {movie_id: {"movie_id": movie_id} for movie_id in movie_ids}
 
+    def get_user_dislikes(self, user_id):
+        return set()
+
+    def get_user_favorite_genres(self, user_id):
+        return None
+
 
 class RecommendationServiceTests(unittest.TestCase):
     def setUp(self):
@@ -105,19 +111,36 @@ class RecommendationServiceTests(unittest.TestCase):
 
         self.assertEqual(result[0]["movie"]["movie_id"], 999)
 
+    def test_all_factor_movies_are_candidates(self):
+        """候选集门槛已移除（2026-10-01），全量因子都参与排序。
+
+        这里锁的是"没有门槛"这个事实本身：101 已被用户评过，其余三个
+        （102/103/104）都应出现在推荐里。若将来重新引入某种候选集收缩，
+        这条用例会失败——届时请连同语义一起重新设计，而不是改断言。
+        """
+        self.repo.ratings[1] = [FakeRating(101, 5.0)]
+        result = self.service.get_for_user(1)
+
+        self.assertEqual(
+            {item["movie"]["movie_id"] for item in result},
+            {102, 103, 104},
+        )
+
     def test_empty_batch_falls_back_to_popular_movies(self):
         class EmptyBatchRepository(FakeRepository):
             def __init__(self):
                 super().__init__()
-                self.popular_limit = None
+                self.popular_limits = []
 
             def get_batch_recommendations(self, user_id, version):
                 return []
 
-            def get_popular_movies(self, limit, min_rating_count=50):
-                self.popular_limit = limit
+            def get_popular_movies(self, limit, min_rating_count=50, genres=None):
+                self.popular_limits.append(limit)
 
                 class PopularMovie:
+                    movie_id = 555
+
                     def to_dict(self):
                         return {"movie_id": 555, "avg_rating": 4.31}
 
@@ -126,7 +149,8 @@ class RecommendationServiceTests(unittest.TestCase):
         repo = EmptyBatchRepository()
         result = OnlineRecommendationService(repo, top_n=3).get_for_user(2)
 
-        self.assertEqual(repo.popular_limit, 3)
+        # 兜底先取 2×top_n 的池；池不足 top_n 再取 3×top_n 补齐
+        self.assertEqual(repo.popular_limits, [6, 9])
         self.assertEqual(
             result,
             [{"rank": 1, "predicted_rating": 4.31, "movie": {"movie_id": 555, "avg_rating": 4.31}}],

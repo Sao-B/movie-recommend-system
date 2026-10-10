@@ -33,11 +33,29 @@ def train_bucket_threshold(train_ratio):
 
 
 def split_ratings_for_eval(ratings_df, train_ratio):
-    """Deterministic per-user stratified split of a ratings DataFrame.
+    """Deterministic split of a ratings DataFrame, independent of partitioning.
 
-    每个用户的评分按 (userId, movieId) 哈希确定性地拆成 ~train_ratio / 其余两份，
-    保证每个用户在训练集和测试集中都有评分（标准的 held-out ratings 评估协议），
-    且结果与分区数、运行次数无关，完全可复现。
+    每条评分按 ``md5(userId:movieId)`` 确定性地落到一个桶，桶号 < 阈值进训练集、
+    否则进测试集。**结果只取决于 (userId, movieId)，与分区数、运行次数、Spark
+    版本无关**——这正是它取代 ``randomSplit`` 的原因：后者按分区内的 RNG 抽样，
+    换分区数就会得到不同的训练/测试集，同一份数据复现不出同一批数字。
+
+    三点必须说清楚，避免误用：
+
+    1. **哈希的输入是"取负之后的"userId。** ``train_als.py`` 先把 MovieLens 的
+       userId 取负（与系统用户隔离），**再**调用本函数。由于
+       ``md5("-8:1") != md5("8:1")``，用原始正数 userId 计算会得到**另一套**
+       训练/测试集（实测：正数口径 train=25,600,540 / test=6,399,664；
+       取负口径 train=25,599,242 / test=6,400,962）。复现线上结果必须同样取负。
+    2. **这是"逐条评分"的划分，不是"按用户分层"的划分。** 哈希的输入虽含
+       ``userId``，但每条评分仍各自独立地进桶，因此某用户在测试集中的评分条数
+       服从二项分布 ``B(n_u, 1 - train_ratio)``。**它并不保证每个用户在训练集和
+       测试集中都有评分**——评分很少的用户有一定概率一条都不进测试集。
+       MovieLens-32M 上实测这类用户约占 0.1%（且他们贡献的评分不足 0.05%），
+       规模上可忽略，但不应声称"保证"。
+    3. **线上口径已实测复现**（2026-09-21 用本文件在生产 VM 上完整训练）：
+       train=25,599,242 / test=6,400,962、**RMSE=0.8074**、MAE=0.6277。
+       该数字是确定性的，同配置重跑应完全一致。
     """
     from pyspark.sql import functions as F
 

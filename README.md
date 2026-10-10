@@ -169,6 +169,8 @@ als:
   cold_start_strategy: drop
   train_ratio: 0.8
   top_n: 20
+  # 候选集门槛已移除（2026-10-01）：原先的 min_rating_count（可辨识性门槛
+  # n_i >= rank）整体删除，在线推荐现在对全量因子排序。
 
 flask:
   host: 127.0.0.1
@@ -340,7 +342,10 @@ start.bat
 
 启动后它还会做两件事：
 
-1. 等前端端口真正能连上，再自动打开 <http://localhost:5173/>；
+1. **先等后端就绪再开浏览器**：轮询 `GET /api/health`（通过后顺手把首页那次查询打热），
+   再等前端端口，最后自动打开 <http://localhost:5173/>。冷启动（重启机器后第一次）后端实测要
+   ~20s 才监听端口，而 vite 两秒就好了——如果开早了，首页那次请求会撞上「后端还没起来」而空着，
+   得手动刷新，所以这里必须按探针等，不写死等待秒数；
 2. 挂一个隐藏的看门狗，**到点自动把两个服务停掉**（默认 4 小时，停止记录写在
    `logs\watchdog.log`）。所以没有停止脚本，小时数由参数给：
 
@@ -389,6 +394,7 @@ Vite 会把 `/api/*` 代理到 `http://localhost:8000`。如果页面显示 `Tot
 
 | 方法 | 路径 | 说明 | 鉴权 |
 |---|---|---|---|
+| `GET` | `/api/health` | 健康探针（`{"status":"ok","database":"up"}`；库连不上返回 503 `degraded`）。`start.bat` 等它通过才打开浏览器 | 否 |
 | `POST` | `/api/auth/register` | 注册并返回 JWT（**账号** 3-20 位，只允许字母 / 数字 / 下划线 / 连字符；昵称初始等于账号） | 否 |
 | `POST` | `/api/auth/login` | 登录并返回 JWT（`username` 字段里填**账号或自己的用户 ID**；纯数字时先按账号找、再按 ID 找） | 否 |
 | `GET` | `/api/movies/` | 分页；`q` 匹配片名 / 简介，纯数字再加 ID 命中（ID 那条排最前），**`q=ID318`（小写 `id318` 同样认）则只按电影 ID 精确命中**；类型、年份筛选；`sort=popular/latest/movie_id` | 否 |
@@ -409,6 +415,9 @@ Vite 会把 `/api/*` 代理到 `http://localhost:8000`。如果页面显示 `Tot
 | `GET` | `/api/profile/stats` | 观影统计（评分分布、最爱类型/导演） | 是 |
 | `GET` | `/api/profile/comments` | 我的评论（分页，附带我在该片评分的星级） | 是 |
 | `GET` | `/api/recommendations/` | 当前用户推荐 | 是 |
+| `POST` | `/api/dislikes/` | 标记一部电影"不感兴趣"（幂等；推荐链路硬排除，`{"movie_id": 123}`） | 是 |
+| `DELETE` | `/api/dislikes/<movie_id>` | 取消"不感兴趣"标记（幂等，没标记过也返回成功） | 是 |
+| `GET` | `/api/dislikes/` | 我的全部标记（`movie_ids` 纯 ID 列表 + `items` 带片名/年份/类型，个人主页偏好卡直接渲染） | 是 |
 | `GET` | `/api/admin/stats` | 系统统计（用户/电影/评分/推荐量、active 模型） | admin |
 | `GET`/`POST` | `/api/admin/users` | 用户列表 / 新建用户 | admin |
 | `PATCH`/`DELETE` | `/api/admin/users/<id>` | 修改 / 删除用户 | admin |
@@ -482,17 +491,19 @@ Authorization: Bearer <JWT>
 - 查看当前用户的个性化推荐；
 - 推荐卡片显示星级推荐指数（ALS 预测评分自动归一化到 0.5 - 5.0）；
 - 未评分的新用户使用离线批量推荐；
-- 已评分用户触发在线向量求解，立即获得更新后的推荐。
+- 已评分用户触发在线向量求解，立即获得更新后的推荐；
+- 卡片右上角有**横向实心三个点**的「更多操作」按钮（与年份行齐平、无底色直接融进卡片，悬停染主题强调色），点开下拉菜单可见**红色的「不感兴趣」**——**两段式就地确认，不再弹浮窗**：第一下点它只是变成红字加粗的「确定吗？」（菜单不自动收起，点了别处就复位），第二下才调 `POST /api/dislikes/`，该电影从当前列表移除并在所有推荐链路里被硬排除；被标记的电影可在个人主页「偏好设置」卡里取消。
 
 ### 10.4 导航与交互
-- 顶部导航栏：电影库 / 我的推荐 / 管理后台，右侧是主题切换与**显示名**下拉菜单（显示名左侧带头像，菜单含个人主页、退出登录）；
+- 顶部导航栏：电影库 / 我的推荐 / 管理后台，右侧是主题切换与**显示名**下拉菜单（触发区就是头像 + 显示名本身，**不另挂下拉箭头图标**，悬停即展开；菜单含个人主页、退出登录）；
 - 没设头像（含选了「恢复默认」）时，头像显示**显示名**首字符（中文取第一个字，英文首字母大写），顶栏、详情页影评卡片与个人主页同一套规则；
-- 主题切换点开是三档下拉面板（日间 / 夜间 / 跟随系统），带图标、名称与当前档位勾选；
-- 下拉箭头随机方向旋转动画（顺时针/逆时针，返回时反向）。
+- 主题切换点开是三档下拉面板（日间 / 夜间 / 跟随系统），带图标、名称与当前档位勾选。
 
 ### 10.5 个人中心
 - 资料就地编辑：点**昵称**或个性签名文本直接改（悬停时提示「点击编辑」，回车或「保存」落库）；昵称下方只读展示账号与 ID（账号是登录凭据，不在这里改；用 ID 也能登录）；
 - 头像：点自己的头像（悬停显示「更换头像」遮罩）打开选择面板，从 **10 个内置 SVG 头像**里挑一个，**点一下立刻生效**；当前在用的那个高亮，面板底部是「恢复默认」（回落成显示名首字符）；
+- 喜欢的电影类型：**偏好设置**卡（在资料卡与观影统计之间）上半区，类型标签逐个列出，右上「修改偏好」主色按钮打开选择弹窗（与首次引导共用 `GenrePickerDialog.vue`，最多 5 个）；没选过时提示「还没选过，推荐会按全站热门来」；
+- 不感兴趣的电影：**偏好设置**卡下半区，进入页面即拉 `GET /api/dislikes/`（`items` 带片名/年份/类型），一行一部（片名可点进详情页），右侧「取消标记」**二次确认**后调 `DELETE /api/dislikes/<movie_id>`，该条立即消失；一条都没有时显示空状态；
 - 观影统计：已评分数量、平均分、发表评论数，以及评分分布与最爱类型/导演；
 - 「我的评论」分页列表，每条左侧带自己的头像，可编辑（星级与正文一起改）或删除（连同该片评分一起删，二次确认，删完同步刷新统计）。
 
@@ -510,15 +521,17 @@ npm run build --prefix frontend
 git diff --check
 ```
 
-当前测试覆盖（14 个测试模块、166 个用例，`discover` 默认收集全部）：
+当前测试覆盖（39 个测试模块、902 个用例，`discover` 默认收集全部；其中 ItemCF 实验与试点脚本相关用例占大头）：
 
-另有 19 个前端组件用例（`npm run test --prefix frontend`，vitest + jsdom，真实渲染 + DOM 断言）：
+另有 28 个前端用例（`npm run test --prefix frontend`，vitest + jsdom，真实渲染 + DOM 断言）：
 
 - 详情页影评区的交互约定：评分控件不开 `clearable`（点同一颗星不会归零）、星星旁没有独立的删除入口、自己的影评置顶且数据来自接口 `my_comment`、每张影评卡片都带作者头像（有头像走图片、没有回落显示名首字符）、全页同时只允许一条影评处于编辑态（`frontend/src/components/__tests__/CommentSection.spec.js`）；
 - 登录页填好后能带着两个字段发出请求（`frontend/src/views/__tests__/LoginView.spec.js`）；
 - 后台用户管理页的 `useTableQuery` 行为：点搜索回到第 1 页、表头排序映射成 `sort`/`order`（取消排序则不带）、删掉末页最后一条后页码回退（`frontend/src/views/admin/__tests__/AdminUsers.spec.js`）；
 - 头像选择面板（`AvatarPicker`）：清单里的每个头像都渲染出来、当前那个高亮、点一下 emit 出它的 url、「恢复默认」在已用内置头像或历史上传头像时可点（已是默认时禁用）、保存中不可重复点（`frontend/src/components/__tests__/AvatarPicker.spec.js`）；
-- 个人主页换头像的入口与落库：点头像打开面板并去取清单、面板里没有文件选择器、选中即用该地址调 `PUT /api/profile/info` 并同步顶栏、点「恢复默认」用 `null` 落库（`frontend/src/views/__tests__/ProfileView.spec.js`）。
+- 个人主页换头像的入口与落库：点头像打开面板并去取清单、面板里没有文件选择器、选中即用该地址调 `PUT /api/profile/info` 并同步顶栏、点「恢复默认」用 `null` 落库（`frontend/src/views/__tests__/ProfileView.spec.js`）；
+- 个人主页「偏好设置」卡：进入页面即拉不感兴趣列表并逐条展示（片名 + 类型）、点「取消标记」调 `DELETE /api/dislikes/<movie_id>` 后该条立即消失、一条都没有时显示空状态（`frontend/src/views/__tests__/ProfileView.spec.js`）；
+- API 客户端对「连不上后端」的处理：GET 退避重试两次（第三次成功就照常返回）、`POST` 不重试（免得重复提交）、超时（`ECONNABORTED`）不重试、重试用尽后提示写明「后端可能还在启动」（`frontend/src/api/__tests__/index.spec.js`）。
 
 - 用户 ID 命名空间隔离：系统用户 ID 为正整数，MovieLens 用户 ID 取负后落在 `[-162541, -1]`，两者天然不相交（取负逻辑见 `spark/train_als.py`）；
 - ALS 输入只读 `user_ratings`、不读 legacy `ratings`，且 MovieLens 与系统用户评分都会被合并（`tests/test_training_contract.py`）；
@@ -533,8 +546,9 @@ git diff --check
 - 评分与影评端到端（临时 SQLite）：成对发表、一人一片一条、可见性由评分推导、编辑记 `edited_at` 等（`tests/test_comment_flow.py`）；
 - 头像：内置 SVG 清单公开可读且清单里每个文件都真的存在、非法名（穿目录 / 大写 / 非 svg）404、`PUT /api/profile/info` 接受预设地址与 `null`（恢复默认）但拒绝外链与上传路径、切到预设或默认后旧的上传图被删；历史上传那条链路（落盘与地址生成、换图删旧图、扩展名/文件头/大小三类拒绝、未登录 401）仍全部覆盖（`tests/test_profile_avatar.py`，临时 SQLite + 临时上传目录）；
 - 个人资料读写（临时 SQLite）：昵称任意字符（中文 / 空格 / 符号）、清空昵称后显示回落账号、超长 400、**账号不可改**（带 `username` 一律 400）、影评署名跟着昵称走（`tests/test_profile_info.py`）；
-- MySQL `rank` 保留字转义（`tests/test_sql_schema_contract.py`）与 Windows 启动入口契约（`tests/test_startup_contract.py`）；
-- 电影搜索的四种输入（`ID318` / `id318` 只认 ID、纯数字宽匹配且 ID 命中排最前、片名、简介）、显式 ID 的两种写法（前缀大小写随意但数字须紧挨，`id 318` / `ID=318` 会退回普通关键词）、热门榜评分人数门槛只在无搜索词时生效，前台与后台两个列表接口同规则（`tests/test_movie_search.py`，临时 SQLite）。
+- MySQL `rank` 保留字转义（`tests/test_sql_schema_contract.py`）与启动入口契约：入口按项目根传绝对路径、`/api/health` 不鉴权返回 ok、**开浏览器必须排在「等后端就绪」之后**、预热的查询与首页首次请求一致（`tests/test_startup_contract.py`）；
+- 电影搜索的四种输入（`ID318` / `id318` 只认 ID、纯数字宽匹配且 ID 命中排最前、片名、简介）、显式 ID 的两种写法（前缀大小写随意但数字须紧挨，`id 318` / `ID=318` 会退回普通关键词）、热门榜评分人数门槛只在无搜索词时生效，前台与后台两个列表接口同规则（`tests/test_movie_search.py`，临时 SQLite）；
+- 用户偏好与"不感兴趣"（临时 SQLite）：类型问卷校验（1..5 个、标准类型、`[]`=明确跳过）与 NULL/`'[]'` 引导语义、不感兴趣标记的幂等与未知电影 404、`GET /api/dislikes/` 返回 `movie_ids` + `items`（片名/年份/类型）、推荐链路把不感兴趣当硬排除、冷启动兜底按偏好类型加权（`tests/test_user_preferences.py`）。
 
 > 这些测试依赖 numpy，请使用已装好依赖的解释器运行（例如 `backend/venv/Scripts/python.exe -m unittest discover -s tests -v`），否则在线推荐相关的用例会因导入失败而报错。
 

@@ -47,10 +47,22 @@ class OnlineRecommendationService:
             self._factor_cache[version] = factors
             return factors
 
+    def _candidate_movie_ids(self, factors):
+        """排序用的候选集：全部已训练出因子的电影。
+
+        .. deprecated:: 2026-10-01
+           这里原本有一道"候选集门槛"（``IDENTIFIABILITY_MIN_RATINGS = 50``），
+           按 `Movie.rating_count >= 50` 把候选从 8 万收窄到约 1.6 万，理由是
+           "50 维因子在观测数不足时不可辨识"。该门槛已整体移除，候选集回到
+           全量因子——**排序结果因此可能重新被冷门条目（评分数个位数）占据**，
+           这是已知且接受的代价，等新方案重建后再处理。
+        """
+        return sorted(factors)
+
     def _batch_recommendations(self, user_id, version):
         return [item.to_dict() for item in self.repository.get_batch_recommendations(user_id, version)]
 
-    def _online_recommendations(self, user_id, model, ratings):
+    def _online_recommendations(self, user_id, model, ratings, dislikes=frozenset()):
         factors = self._load_factors(model)
         rating_by_movie = {int(row.movie_id): float(row.rating) for row in ratings}
         rated_movie_ids = sorted(rating_by_movie)
@@ -65,13 +77,14 @@ class OnlineRecommendationService:
             reg_param=float(model.reg_param),
         )
 
-        movie_ids = sorted(factors)
+        movie_ids = self._candidate_movie_ids(factors)
         item_factors = np.asarray([factors[movie_id] for movie_id in movie_ids])
+        excluded = set(rated_movie_ids) | set(dislikes)
         ranked = rank_unrated_items(
             movie_ids,
             item_factors,
             user_vector,
-            set(rated_movie_ids),
+            excluded,
             self.top_n,
         )
         movies = self.repository.get_movies([movie_id for movie_id, _ in ranked])
@@ -90,11 +103,24 @@ class OnlineRecommendationService:
             })
         return result
 
-    def _popular_recommendations(self):
-        """冷启动兜底：批量推荐为空时回退全站高分热门电影，避免新用户看到空白页。"""
-        movies = self.repository.get_popular_movies(self.top_n)
+    def _popular_recommendations(self, genres=None, dislikes=frozenset()):
+        """冷启动兜底：批量推荐为空时回退全站高分热门电影，避免新用户看到空白页。
+
+        ``genres`` 非空时优先在用户自选类型内取（不足再补全局热门），
+        ``dislikes`` 里的电影一律排除。
+        """
+        pool = []
+        if genres:
+            pool = self.repository.get_popular_movies(self.top_n * 2, genres=genres)
+        pool = pool or self.repository.get_popular_movies(self.top_n * 2)
+        movies = [m for m in pool if m.movie_id not in dislikes]
+        if len(movies) < self.top_n:
+            extra = self.repository.get_popular_movies(self.top_n * 3)
+            have = {m.movie_id for m in movies}
+            movies += [m for m in extra if m.movie_id not in have
+                       and m.movie_id not in dislikes]
         result = []
-        for rank, movie in enumerate(movies, start=1):
+        for rank, movie in enumerate(movies[:self.top_n], start=1):
             movie_data = movie.to_dict() if hasattr(movie, "to_dict") else movie
             result.append({
                 "rank": rank,
@@ -104,22 +130,35 @@ class OnlineRecommendationService:
             })
         return result
 
+    def get_popular_for_user(self, user_id, dislikes=None):
+        """冷启动兜底入口（ItemCF 等其它链路空结果时共用）：
+        按用户自选类型加权的全站高分热门，排除"不感兴趣"。"""
+        if dislikes is None:
+            dislikes = self.repository.get_user_dislikes(user_id)
+        genres = self.repository.get_user_favorite_genres(user_id)
+        return self._popular_recommendations(genres=genres, dislikes=dislikes)
+
     def get_for_user(self, user_id):
         """Return online recommendations, falling back to the active batch result,
         then to globally popular movies when batch results are empty."""
+        dislikes = self.repository.get_user_dislikes(user_id)
         model = self.repository.get_active_model()
         if model is None:
-            recs = self._batch_recommendations(user_id, None)
+            recs = [r for r in self._batch_recommendations(user_id, None)
+                    if r["movie"]["movie_id"] not in dislikes]
         else:
             ratings = self.repository.get_user_ratings(user_id)
             if not ratings:
-                recs = self._batch_recommendations(user_id, str(model.version))
+                recs = [r for r in self._batch_recommendations(user_id, str(model.version))
+                        if r["movie"]["movie_id"] not in dislikes]
             else:
                 try:
-                    recs = self._online_recommendations(user_id, model, ratings)
+                    recs = self._online_recommendations(user_id, model, ratings,
+                                                        dislikes=dislikes)
                 except Exception:
                     # 在线求解失败（因子缺失、用户评分异常等）一律降级到批量推荐
                     logger.exception("online recommendation failed for user_id=%s", user_id)
-                    recs = self._batch_recommendations(user_id, str(model.version))
+                    recs = [r for r in self._batch_recommendations(user_id, str(model.version))
+                            if r["movie"]["movie_id"] not in dislikes]
 
-        return recs if recs else self._popular_recommendations()
+        return recs if recs else self.get_popular_for_user(user_id, dislikes=dislikes)

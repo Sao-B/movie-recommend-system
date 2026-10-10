@@ -8,15 +8,19 @@
         <!-- 还没发表：显示名（昵称优先、回落账号）+ 星星在评论框上面（显示名在星星左边），评分与正文缺一不可 -->
         <template v-if="!hasPublished">
           <div class="rate-row">
-            <span class="rate-user">{{ auth.displayName }}</span>
-            <!-- 星星不再带「删除」：评分的撤销与影评绑定，走影评卡片上的「删除」 -->
-            <el-rate
-              :model-value="myRating"
-              @update:model-value="$emit('update:my-rating', $event)"
-              :max="5"
-              allow-half
-              show-score
-            />
+            <!-- 录入区也亮出自己的头像：与影评卡片、顶栏同一套（有图用图，没图回落首字符） -->
+            <UserAvatar :src="auth.user?.avatar_url" :name="auth.displayName" :size="44" />
+            <!-- 名字在上（缩小一号）、星星紧贴其下，两行成一列立在头像旁；不再显示分值数字 -->
+            <div class="rate-line">
+              <span class="rate-user">{{ auth.displayName }}</span>
+              <!-- 星星不再带「删除」：评分的撤销与影评绑定，走影评卡片上的「删除」 -->
+              <el-rate
+                :model-value="myRating"
+                @update:model-value="$emit('update:my-rating', $event)"
+                :max="5"
+                allow-half
+              />
+            </div>
           </div>
 
           <el-input
@@ -126,6 +130,7 @@ import { useAuthStore } from '@/stores/auth'
 import { apiComments } from '@/api/comments'
 import { apiRatings } from '@/api/ratings'
 import CommentItem from '@/components/CommentItem.vue'
+import UserAvatar from '@/components/UserAvatar.vue'
 
 const props = defineProps({
   movieId: { type: Number, required: true },
@@ -340,7 +345,7 @@ onUnmounted(() => {
   margin-bottom: 24px;
 }
 
-/* 星星那一行：显示名在左、星星在右，压在评论框上方 */
+/* 星星那一行：头像在左，名字（缩小一号）在上、星星紧贴其下，两行成一列与头像垂直居中 */
 .rate-row {
   display: flex;
   align-items: center;
@@ -348,7 +353,21 @@ onUnmounted(() => {
   margin-bottom: 10px;
 }
 
+/* 名字在上、星星在下；el-rate 自带 32px 固定盒高（图标只有 18px），放开成 auto
+   免得两行之间被空盒撑出一截 */
+.rate-line {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.rate-line :deep(.el-rate) {
+  height: auto;
+}
+
 .rate-user {
+  font-size: 14px;
   font-weight: 600;
   color: var(--app-text);
 }

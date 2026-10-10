@@ -1,6 +1,7 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
+from sqlalchemy import text
 from .db import db
 from .routes.auth import auth_bp
 from .routes.movies import movies_bp
@@ -9,6 +10,7 @@ from .routes.ratings import ratings_bp
 from .routes.admin import admin_bp
 from .routes.comments import comments_bp
 from .routes.profile import profile_bp
+from .routes.dislikes import dislikes_bp
 
 
 def create_app(config_obj=None):
@@ -42,6 +44,26 @@ def create_app(config_obj=None):
         top_n=app.config.get("ALS_TOP_N", 20),
     )
 
+    # ItemCF 在线推荐（可选）：配置了 itemcf.model_dir 才启用 ?model=itemcf 链路。
+    # 模型图在首次请求时 mmap 加载（约 127MB），不拖慢应用启动。
+    if app.config.get("ITEMCF_MODEL_DIR"):
+        from .itemcf_service import ItemCFService
+        app.extensions["itemcf_service"] = ItemCFService(
+            SqlAlchemyRecommendationRepository(),
+            app.config["ITEMCF_MODEL_DIR"],
+            top_n=app.config.get("ITEMCF_TOP_N", 20),
+        )
+    if app.config.get("FUSION_ENABLED") and app.config.get("ITEMCF_MODEL_DIR"):
+        from .fusion_service import FusionService
+        app.extensions["fusion_service"] = FusionService(
+            app.extensions["itemcf_service"],
+            app.extensions["itemcf_service"].repository,
+            weights=app.config.get("FUSION_WEIGHTS", (0.4, 0.5, 0.1)),
+            als_min_support=app.config.get("FUSION_ALS_MIN_SUPPORT", 1000),
+            als_top_k=app.config.get("FUSION_ALS_TOP_K", 500),
+            top_n=app.config.get("FUSION_TOP_N", 20),
+        )
+
     # 蓝图注册
     app.register_blueprint(auth_bp,    url_prefix="/api/auth")
     app.register_blueprint(movies_bp,  url_prefix="/api/movies")
@@ -50,6 +72,22 @@ def create_app(config_obj=None):
     app.register_blueprint(admin_bp,   url_prefix="/api/admin")
     app.register_blueprint(comments_bp, url_prefix="/api")
     app.register_blueprint(profile_bp, url_prefix="/api/profile")
+    app.register_blueprint(dislikes_bp, url_prefix="/api/dislikes")
+
+    # 健康探针（`GET /api/health`，不鉴权）
+    #
+    # 给启动脚本用：`scripts/start_bg.ps1` 必须等它返回 200 才打开浏览器。
+    # 前端（vite）两秒就绪，后端冷启动（重启机器后第一次）实测要 ~20s 才 bind 端口，
+    # 早先「只等前端端口」的做法会让首页那次 /api/movies/ 直撞代理的 ECONNREFUSED，
+    # 页面停在空列表上、只能手动刷新。
+    # 顺带做一次 SELECT 1：进程活着但库连不上时返回 503，前端也就没必要白等。
+    @app.get("/api/health")
+    def health():
+        try:
+            db.session.execute(text("SELECT 1"))
+        except Exception:  # noqa: BLE001 —— 探针只关心通不通，异常类型不重要
+            return jsonify({"status": "degraded", "database": "down"}), 503
+        return jsonify({"status": "ok", "database": "up"})
 
     # 全局错误处理
     @app.errorhandler(404)

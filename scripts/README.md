@@ -53,9 +53,18 @@ vm   = vm_config()                         # 虚拟机 SSH / MySQL
 - `start_backend.py` - 启动 Flask 后端
 - `start_bg.ps1` - Windows 后台启动 Flask + Vite（隐藏窗口，日志/PID 落 `logs\`；`start.bat` 调它）。
   它做四件事：① 先停掉上一批进程（按 `logs\*.pid`，再按端口 8000/5173 兜底）② 起前后端
-  ③ 等前端端口能连上后打开浏览器 ④ 以 `-WatchMinutes` / `-WatchPids` 参数再拉起自己当看门狗，
-  到点自动停掉这两个进程。**看门狗就是同一份脚本**，所以项目里没有停止脚本；
+  ③ **等后端就绪再开浏览器**：轮询 `GET /api/health`（不鉴权，内含一次 `SELECT 1`），通过后把首页
+  那次查询（`/api/movies/?page=1&per_page=24&sort=popular`）打热，再等前端端口，最后打开浏览器
+  ④ 以 `-WatchMinutes` / `-WatchPids` 参数再拉起自己当看门狗，到点自动停掉这两个进程。
+  **看门狗就是同一份脚本**，所以项目里没有停止脚本；
   想提前停就结束 python/node，或再跑一次 `start.bat`（等于重启）。
+
+  **为什么 ③ 要等后端（2026-09-18 修的）**：vite 两秒就绪，而 Flask **冷启动（重启机器后第一次）
+  实测 ~20s 才监听端口**（热启动只要 ~1.3s，差的是操作系统第一次把 python 与一堆 DLL 读进内存）。
+  早先「只等前端端口」的做法会让首页那次 `/api/movies/` 直撞代理的 `ECONNREFUSED`
+  （`logs\vue.err.log` 里可以查到），列表就一直空着，得手动刷新。现在后端就绪与预热都会打印出来：
+  `Backend ready in Xs` / `Warmed up home page query (+Xs)`。
+  前端侧另有一层兜底：`frontend/src/api/index.js` 遇到「连不上后端」会对 GET 退避重试两次。
   ⚠️ `start_bg.ps1` 与 `start.bat` 都刻意写成**纯 ASCII**，别再往里加中文注释：
   `start.bat` 用 Windows PowerShell 5.1 跑（无 BOM 的 UTF-8 会被按 ANSI/GBK 解码，
   中文注释会把 `param()` 块解坏、直接解析报错），`cmd.exe` 按 OEM 代码页读 `.bat`

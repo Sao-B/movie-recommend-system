@@ -92,6 +92,73 @@
       </div>
     </el-card>
 
+    <!-- 偏好设置：类型偏好 + 不感兴趣，一张卡集中管理（推荐结果由这两样共同决定） -->
+    <el-card class="preferences-card">
+      <template #header>
+        <div class="card-header">
+          <span>偏好设置</span>
+        </div>
+      </template>
+
+      <div class="pref-section">
+        <div class="pref-head">
+          <h4>喜欢的电影类型</h4>
+          <el-button type="primary" @click="genreDialogVisible = true">
+            <el-icon><Edit /></el-icon>
+            修改偏好
+          </el-button>
+        </div>
+        <p class="pref-hint">没看过的新电影会优先按这些类型推荐（最多 5 个）</p>
+        <div class="genres-tags">
+          <el-tag
+            v-for="g in (userInfo.favorite_genres || [])"
+            :key="g"
+            class="genre-chip"
+          >{{ g }}</el-tag>
+          <span v-if="!(userInfo.favorite_genres || []).length" class="genres-empty">
+            还没选过，推荐会按全站热门来
+          </span>
+        </div>
+      </div>
+
+      <el-divider class="pref-divider" />
+
+      <div class="pref-section">
+        <div class="pref-head">
+          <h4>不感兴趣的电影</h4>
+          <span v-if="dislikes.length" class="pref-count">共 {{ dislikes.length }} 部</span>
+        </div>
+        <p class="pref-hint">标记过的电影不会出现在任何推荐里；取消标记后可能重新出现</p>
+        <div v-loading="dislikesLoading">
+          <div v-if="dislikes.length" class="dislike-list">
+            <div v-for="d in dislikes" :key="d.movie_id" class="dislike-item">
+              <router-link :to="`/movies/${d.movie_id}`" class="dislike-title">
+                {{ dislikeTitle(d) }}<span v-if="d.year" class="year"> ({{ d.year }})</span>
+              </router-link>
+              <el-tag
+                v-for="g in (d.genres || []).slice(0, 3)"
+                :key="g"
+                size="small"
+                type="info"
+              >{{ g }}</el-tag>
+              <el-button text type="danger" size="small" class="dislike-remove" @click="removeDislike(d)">
+                取消标记
+              </el-button>
+            </div>
+          </div>
+          <el-empty v-else description="没有标记过不感兴趣的电影" :image-size="60" />
+        </div>
+      </div>
+    </el-card>
+
+    <!-- 选类型：首次引导 / 个人主页编辑共用同一弹窗组件 -->
+    <GenrePickerDialog
+      :visible="genreDialogVisible"
+      title="修改喜欢的电影类型"
+      @close="genreDialogVisible = false"
+      @saved="onGenresSaved"
+    />
+
     <!-- 选头像：内置 SVG 头像网格 + 恢复默认，点哪个立刻保存并关窗 -->
     <el-dialog v-model="avatarPickerVisible" title="选择头像" width="440px">
       <AvatarPicker
@@ -269,11 +336,13 @@
 
 <script setup>
 import { ref, computed, nextTick, onMounted } from 'vue'
-import { Camera } from '@element-plus/icons-vue'
+import { Camera, Edit } from '@element-plus/icons-vue'
 import UserAvatar from '@/components/UserAvatar.vue'
 import AvatarPicker from '@/components/AvatarPicker.vue'
 import CommentEditForm from '@/components/CommentEditForm.vue'
+import GenrePickerDialog from '@/components/GenrePickerDialog.vue'
 import { getUserInfo, updateUserInfo, getPresetAvatars, getUserStats, getUserComments } from '@/api/profile'
+import { apiDislikes } from '@/api/dislikes'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiComments } from '@/api/comments'
 import { apiRatings } from '@/api/ratings'
@@ -305,6 +374,55 @@ const nicknameInputRef = ref(null)
 
 // 头像：内置 SVG 头像清单 + 选择面板的开关/保存态
 const avatarPickerVisible = ref(false)
+
+// 喜欢的类型：弹窗保存后后端返回新 userInfo（含 favorite_genres），直接替换
+const genreDialogVisible = ref(false)
+function onGenresSaved(list) {
+  userInfo.value = { ...userInfo.value, favorite_genres: list, needs_onboarding: false }
+  auth.updateUser({ favorite_genres: list, needs_onboarding: false })
+  ElMessage.success('偏好类型已更新，推荐会参考它')
+}
+
+// 不感兴趣：GET /api/dislikes 的 items（带片名/年份/类型），列表可逐条取消标记
+const dislikes        = ref([])
+const dislikesLoading = ref(false)
+
+async function loadDislikes() {
+  dislikesLoading.value = true
+  try {
+    const data = await apiDislikes.list()
+    dislikes.value = data.items || []
+  } catch {
+    // 错误提示由 axios 拦截器统一弹出
+  } finally {
+    dislikesLoading.value = false
+  }
+}
+
+async function removeDislike(item) {
+  try {
+    await ElMessageBox.confirm(
+      `取消后《${dislikeTitle(item)}》可能重新出现在推荐里。确定吗？`,
+      '取消不感兴趣',
+      { confirmButtonText: '取消标记', cancelButtonText: '再想想', type: 'warning' }
+    )
+  } catch {
+    return // 用户取消
+  }
+  try {
+    await apiDislikes.remove(item.movie_id)
+    dislikes.value = dislikes.value.filter((x) => x.movie_id !== item.movie_id)
+    ElMessage.success('已取消标记，这部电影可能重新出现在推荐里')
+  } catch {
+    // 同上
+  }
+}
+
+// MovieLens 片名自带「 (1994)」年份尾巴，展示时去掉再统一补一次，避免出现两个年份
+function dislikeTitle(item) {
+  if (!item.title) return `电影 ${item.movie_id}`
+  return item.title.replace(/\s*\(\d{4}\)\s*$/, '')
+}
 const presetAvatars       = ref([])
 const avatarSaving        = ref(false)
 
@@ -558,6 +676,7 @@ async function handleDeleteComment(item) {
 }
 
 onMounted(async () => {
+  loadDislikes()   // 与资料加载互不依赖，并行拉
   await loadUserInfo()
   await loadStats()
   await loadComments()
@@ -969,5 +1088,91 @@ onMounted(async () => {
 .pagination {
   margin-top: 20px;
   justify-content: center;
+}
+
+/* 偏好设置卡：类型偏好 + 不感兴趣集中管理，插在资料卡与观影统计之间 */
+.preferences-card {
+  margin-bottom: 20px;
+}
+
+.pref-section h4 {
+  margin: 0;
+  font-size: 16px;
+  color: var(--app-text);
+}
+
+/* 标题在左、操作按钮/计数在右 */
+.pref-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pref-hint {
+  margin: 6px 0 12px;
+  font-size: 13px;
+  color: var(--app-text-muted);
+}
+
+.pref-count {
+  font-size: 13px;
+  color: var(--app-text-muted);
+}
+
+.pref-divider {
+  margin: 20px 0;
+}
+
+.genres-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.genres-empty {
+  font-size: 14px;
+  color: var(--app-text-muted);
+  font-style: italic;
+}
+
+.genre-chip { margin-right: 2px; }
+
+/* 不感兴趣列表：片名 + 类型标签 + 取消标记一行一条 */
+.dislike-list {
+  display: grid;
+  gap: 8px;
+}
+
+.dislike-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--app-fill);
+  border-radius: 8px;
+}
+
+.dislike-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--app-text);
+  text-decoration: none;
+}
+
+.dislike-title:hover {
+  color: #409eff;
+}
+
+.dislike-title .year {
+  color: var(--app-text-muted);
+  font-weight: 400;
+  font-size: 13px;
+}
+
+.dislike-remove {
+  margin-left: auto;
 }
 </style>

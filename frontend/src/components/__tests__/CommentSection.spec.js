@@ -87,6 +87,16 @@ describe('详情页影评区的交互约定', () => {
     expect(rateRow.find('[class*="delete"]').exists()).toBe(false)
   })
 
+  it('录入区的显示名左侧亮出当前用户头像 —— 没头像时回落显示名首字符', async () => {
+    const wrapper = await mountSection({ myComment: null, comments: [OTHER_COMMENT] })
+
+    const rateRow = wrapper.find('.rate-row')
+    expect(rateRow.find('.user-avatar').exists()).toBe(true)
+    // localStorage 里的 user 没有 avatar_url → 回落成显示名首字符（username 'me' → 'M'）
+    expect(rateRow.find('.user-avatar img').exists()).toBe(false)
+    expect(rateRow.find('.user-avatar').text()).toBe('M')
+  })
+
   it('自己的影评置顶展示，数据来自接口的 my_comment', async () => {
     const wrapper = await mountSection()
 

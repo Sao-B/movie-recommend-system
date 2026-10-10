@@ -17,8 +17,13 @@ vi.mock('@/api/profile', () => ({
 }))
 vi.mock('@/api/comments', () => ({ apiComments: { update: vi.fn(), delete: vi.fn() } }))
 vi.mock('@/api/ratings', () => ({ apiRatings: { submit: vi.fn() } }))
+vi.mock('@/api/dislikes', () => ({
+  apiDislikes: { add: vi.fn(), remove: vi.fn(), list: vi.fn() },
+}))
 
 import { getUserInfo, updateUserInfo, getPresetAvatars, getUserStats, getUserComments } from '@/api/profile'
+import { apiDislikes } from '@/api/dislikes'
+import { ElMessageBox } from 'element-plus'
 import ProfileView from '@/views/ProfileView.vue'
 
 const PRESETS = [
@@ -29,6 +34,8 @@ const USER = {
   id: 7, username: 'movie_fan', nickname: '影迷小王',
   avatar_url: '', bio: '', created_at: '2026-09-18 10:00:00',
 }
+
+const DISLIKE_ITEM = { movie_id: 318, title: 'Shawshank', year: 1994, genres: ['Drama'] }
 
 async function mountProfile(user = {}) {
   getUserInfo.mockResolvedValue({ ...USER, ...user })
@@ -65,6 +72,9 @@ beforeEach(() => {
   localStorage.setItem('token', 'test-token')
   localStorage.setItem('user', JSON.stringify({ id: USER.id, username: USER.username }))
   vi.clearAllMocks()
+  apiDislikes.list.mockResolvedValue({
+    count: 1, movie_ids: [DISLIKE_ITEM.movie_id], items: [DISLIKE_ITEM],
+  })
 })
 
 describe('个人主页头像选择', () => {
@@ -101,5 +111,49 @@ describe('个人主页头像选择', () => {
     await flushPromises()
 
     expect(updateUserInfo).toHaveBeenCalledWith({ avatar_url: null })
+  })
+})
+
+describe('个人主页偏好设置卡（类型 + 不感兴趣）', () => {
+  it('进入页面就拉取不感兴趣列表，并在偏好设置卡里逐条展示', async () => {
+    const wrapper = await mountProfile()
+
+    expect(apiDislikes.list).toHaveBeenCalledTimes(1)
+    const items = wrapper.findAll('.dislike-item')
+    expect(items).toHaveLength(1)
+    expect(items[0].text()).toContain('Shawshank')
+    expect(items[0].text()).toContain('Drama')
+  })
+
+  it('点「取消标记」→ 先弹二次确认，确认后 DELETE 落库、该条立即从列表消失', async () => {
+    apiDislikes.remove.mockResolvedValue({ deleted: true })
+    const confirmSpy = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm')
+    const wrapper = await mountProfile()
+
+    await wrapper.findAll('.dislike-item')[0].find('button').trigger('click')
+    await flushPromises()
+
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    expect(apiDislikes.remove).toHaveBeenCalledWith(318)
+    expect(wrapper.findAll('.dislike-item')).toHaveLength(0)
+  })
+
+  it('确认框里点了「再想想」→ 不调 DELETE，列表原样保留', async () => {
+    vi.spyOn(ElMessageBox, 'confirm').mockRejectedValue('cancel')
+    const wrapper = await mountProfile()
+
+    await wrapper.findAll('.dislike-item')[0].find('button').trigger('click')
+    await flushPromises()
+
+    expect(apiDislikes.remove).not.toHaveBeenCalled()
+    expect(wrapper.findAll('.dislike-item')).toHaveLength(1)
+  })
+
+  it('一条都没标记过时显示空状态文案', async () => {
+    apiDislikes.list.mockResolvedValue({ count: 0, movie_ids: [], items: [] })
+    const wrapper = await mountProfile()
+
+    expect(wrapper.findAll('.dislike-item')).toHaveLength(0)
+    expect(wrapper.find('.preferences-card').text()).toContain('没有标记过不感兴趣的电影')
   })
 })

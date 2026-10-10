@@ -7,6 +7,24 @@
 正则按观测数缩放（λ·n），口径与 Spark MLlib ALS 一致（SPARK-2085）。
 """
 import numpy as np
+from collections import Counter
+
+
+def objective(rows, model, reg):
+    """Observation-weighted regularized SSE; no ratings-by-rank allocation."""
+    nu, ni = Counter(), Counter()
+    sse = 0.0
+    for u, i, r, _ in rows:
+        error = predict_one(model['mu'], model['bu'][u], model['bi'][i],
+                            model['P'][u], model['Q'][i]) - r
+        sse += error * error
+        nu[u] += 1
+        ni[i] += 1
+    penalty = sum(n * (model['bu'][u] ** 2 + float(np.dot(model['P'][u], model['P'][u])))
+                  for u, n in nu.items())
+    penalty += sum(n * (model['bi'][i] ** 2 + float(np.dot(model['Q'][i], model['Q'][i])))
+                   for i, n in ni.items())
+    return float(sse + reg * penalty)
 
 
 def solve_factor(obs_q, target, lam, n_obs):
@@ -104,10 +122,11 @@ def predict_model(model, u, i):
     return predict_one(mu, b_u, b_i, p, q)
 
 
-def fit_spark(spark, rows, rank=50, reg=0.1, iters=10, seed=42, num_slices=16, log=None):
+def fit_spark(spark, rows, rank=50, reg=0.1, iters=10, seed=42, num_slices=16, log=None, on_iter=None):
     """分布式交替求解：每轮 b_u → b_i → p_u → q_i。
 
     rows:[(u,i,r,ts)]，返回 (model, losses)。
+    on_iter(iteration, model, rmse) 在完整轮次后调用，iteration 从 1 开始；不复制模型。
     model = {'mu':…, 'bu':{u:…}, 'bi':{i:…}, 'P':{u:ndarray}, 'Q':{i:ndarray}}
     用 predict_model(model, u, i) 做单点预测，或 train_rmse(rows, **model) 监控 RMSE。
 
@@ -206,6 +225,8 @@ def fit_spark(spark, rows, rank=50, reg=0.1, iters=10, seed=42, num_slices=16, l
 
         loss = train_rmse(rows, mu, bu, bi, P, Q)
         losses.append(loss)
+        if on_iter is not None:
+            on_iter(it + 1, {'mu': mu, 'bu': bu, 'bi': bi, 'P': P, 'Q': Q}, loss)
         if log:
             log('iter=%d train_rmse=%.6f' % (it + 1, loss))
 

@@ -1,387 +1,127 @@
-# 经典 ALS 小范围参数测试（rank × λ 网格）实现计划
+# 经典 ALS 小范围参数测试计划（rank × λ）
 
-> **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
+日期：2026-10-03。目标：在现有 2,000 用户切片上，只改变 rank 与 λ，观察推荐效果、评分误差和成本。完成 9 组与简短结论后停止，允许所有配置效果都不理想。
 
-**目标：** 在现有 2,000 用户切片上，只扫 rank 与 λ 两项，观察它们对推荐排序、评分误差、预测分越界与运行成本的影响，给出「哪个配置较好、改善多少、是否收敛、是否值得继续」的可追溯结论。
+## 1. 范围与固定条件
 
-**架构：** 全程复用 `experiments/pilot/`，实验与产物不出该目录，**不改应用代码、不写生产数据库**。模型沿用当前带偏置项的矩阵分解 `r̂ = μ + b_u + b_i + p_u·q_i`，用交替最小二乘求解；因子不加非负约束；正则沿用 `λ × 观测数` 口径（与 MLlib 一致，SPARK-2085），λ 同时作用于因子与偏置。评测协议改为**三段时序切分（64% 训练 / 16% 验证 / 20% 保留测试）**，只报告验证集结果。
+复用 `experiments/pilot/`，代码改动限该目录及对应 `tests/`。不改应用代码、不写生产数据库、不发布模型、不扩到 20k 或 32M，不增加 ItemCF、级联或收缩机制。
 
-**技术栈：** PySpark 3.5.1（VM，`--master 'local[*]'`）、NumPy、unittest（开发机 `backend/venv`）、bash（VM 串行编排）。
+| 项目 | 固定值 |
+|---|---|
+| 模型 | 带偏差项矩阵分解，`r_hat = μ + b_u + b_i + p_u·q_i`，ALS 求解，因子不加非负约束 |
+| 正则 | 因子与偏差均按 `λ × 观测数` 正则化；μ 为训练均分，不参与正则 |
+| 数据 | 现有 2,000 用户切片；预期 304,944 条、8,357,080 B，MD5 `736601f707fc6b048bae46caaf154ee9`，运行前复核 |
+| 输入 | `hdfs:///movielens/pilot/ratings.csv`，核对实际 HDFS 文件内容与切片指纹一致 |
+| 初始化 | 沿用 `init_factors`，seed=42、scale=0.1 |
+| 训练预算 | 10 轮、16 个分区，所有组合一致 |
+| 推荐 | Top-20，原始分降序，并列按 movieId 升序 |
+| 环境 | VM hadoop102，Spark `local[*]`，预计 Spark 3.5.1 / Java 8 / Python 3.6.8；记录实际版本和资源 |
 
----
-
-## 0. 本次修订：初稿 → 定稿的口径
-
-> 2026-10-03 复核（对着 `experiments/pilot/` 现有代码逐行核对）后补全。初稿方向不变，以下 10 处从「有歧义 / 与代码不符」改为「唯一写法」。
-
-| # | 初稿状态 | 定稿口径 | 落点 |
-|---|---|---|---|
-| 1 | 「沿用向下取整、至少留 1 条且至少保留 1 条训练评分」 | 三段切分完整规则，含 **n=2 不切验证** 的硬约束 | §3.1 |
-| 2 | 「逐轮训练目标值（含正则）」 | 现码 `fit_spark` 只产出训练 RMSE → **新增 `objective()` 纯函数 + `on_iter` 回调** | §3.7、§4 |
-| 3 | 「修正越界区间为 [0.5, 5.0]」 | 明确上下界含端、剔除口径、**两个口径分别统计**、MostPop 记 N/A | §3.5 |
-| 4 | 「报告正例可推荐比例」 | 指标定义为「候选内正例数 / 正例总数」，按用户平均 | §3.3 |
-| 5 | 「Top-20 支持度中位数」 | 明确为**全池合并**取中位数；每用户中位数仅作附录诊断 | §3.6 |
-| 6 | 「各模型使用同一批用户」 | 锁死：无正例用户不计入；**正例全不可推荐者仍计入并记 0** | §3.3 |
-| 7 | 「按新切分跑一次 MostPop」 | `run_pilot.py` 加 `--models`，MostPop 只跑一次、表里只出现一行 | §4、§5 任务 4 |
-| 8 | 「固定 16 个分区」 | `als.py` 默认是 16 但未暴露 → 加 `--num-slices` 显式传入并记录 | §4 |
-| 9 | §5 未写越界验收阈值 | 本轮**不设阈值**，只报告数字与幅度（试点那 0.1% 判据随协议变更作废） | §6 |
-| 10 | 未提资源列口径 | `vm_monitor.sh` 的 RSS 是「用户 h 全部 java / 全部 python 进程之和」，报告须注明，不得写成 driver 内存 | §3.8 |
-
----
-
-## 1. 目标与固定条件
-
-在 2,000 用户切片上，观察 rank、λ 对推荐排序、评分误差和运行成本的影响，找出值得后续验证的配置。**允许所有配置效果都不理想**，不以「必须训练出好模型」为验收条件。
-
-固定项（逐项落到 CLI 参数或代码常量，报告里回填实测值）：
-
-| 固定项 | 值 | 载体 |
-|---|---|---|
-| 用户切片 | 2000 用户，seed=42 | `scripts/make_pilot_slice.py`（已存在） |
-| 切片指纹 | `pilot_ratings.csv` 8,357,080 B，**md5 = `736601f707fc6b048bae46caaf154ee9`**（开发机 `data/processed/` 与 VM `/home/h/` 两侧已核对一致） | 运行记录 |
-| 输入 | `hdfs:///movielens/pilot/ratings.csv`（HDFS 上已有，8.0 M） | `--input` |
-| 初始化 | `init_factors` 确定性派生，scale=0.1，seed=42 | `--seed 42` |
-| 迭代 | 10 轮 | `--iters 10` |
-| 分区 | 16 | `--num-slices 16` |
-| Top-N | 20 | `--top-n 20` |
-| 运行环境 | VM `local[*]`，Spark 3.5.1 / Java 8 / Python 3.6.8，2 核 / 3.9 GB（可用约 2.6 GB），无 YARN | 运行记录 |
-| 非负约束 | **不加**（与生产 `nonnegative=true` 有意不同，本计划沿用试点的显式反馈设定） | 代码现状 |
-| 正则口径 | `λ × n_obs`，λ 同时作用于因子与偏置，μ 不参与正则 | `als.py` 现状 |
-
-仅改变 rank 与 λ（见 §2）。
-
-## 2. 参数组合
-
-| 参数 | 取值 |
+| 变量 | 取值 |
 |---|---|
 | rank | 10、30、50 |
 | λ | 0.01、0.1、1.0 |
 
-共 9 组，**串行**运行。rank=50、λ=0.1 是原配置参照，但**必须按本次三段切分重跑**，不得引用试点旧数字。
+共 9 组，串行运行。rank=50、λ=0.1 为参照组，按本次协议重跑，不引用旧试点数字。MostPop 仅作为固定排序基线，另跑一次。
 
-## 3. 统一评测口径
+## 2. 数据与评测口径
 
-### 3.1 三段切分（约 64% / 16% / 20%）
+### 三段切分
 
-新增 `temporal_split_three_way`，**保留现有 `temporal_split` 不动**（其契约与用例 `tests/test_pilot_data.py` 已锁死）。按用户（升序）处理，用户内按 `(timestamp, movieId, 原行号)` 升序后，令条数 = n：
+新增 `temporal_split_three_way`，保留原 `temporal_split` 及其契约。每用户按 `(timestamp, movieId, 原行号)` 排序：
 
-```python
-# experiments/pilot/data.py 新增
-def temporal_split_three_way(rows, test_frac=0.2, val_frac=0.2):
-    """每用户时序三段切分：[train | val | test]，三段在时间上依次递增。
+1. n<2 时全部进训练集。
+2. `n_test = min(max(1, int(n * 0.2)), n - 1)`，取末尾作为保留测试段。
+3. 令 `rest = n - n_test`；rest<2 时不切验证，否则 `n_val = min(max(1, int(rest * 0.2)), rest - 1)`，取剩余部分末尾作为验证段。
+4. 其余用于训练；三段各自按原行号返回。
 
-    规则（硬约束：train 至少 1 条）：
-      n < 2 : 全部进 train（单条无法评测）
-      n_test = max(1, int(n * test_frac))；若 n - n_test < 1 则 n_test = n - 1
-      rest   = n - n_test
-      n_val  = max(1, int(rest * val_frac)) if rest >= 2 else 0
-      若 rest - n_val < 1 则 n_val = rest - 1      # 保证 train >= 1
-    边界样例：n=1 -> (1,0,0)；n=2 -> (1,0,1)；n=3 -> (1,1,1)；
-              n=10 -> (7,1,2)；n=100 -> (64,16,20)
-    """
-```
+边界例：n=1→(1,0,0)，n=2→(1,0,1)，n=3→(1,1,1)，n=10→(7,1,2)，n=100→(64,16,20)。总体约 64%/16%/20%，实际条数以逐用户取整结果为准。各段互不重叠、并集为原数据，test 段应与原两段切分逐条相同（该切片预期 60,192 条）。同秒可以跨边界，不宣称严格时间隔离。
 
-- 三段各自按原行号排序返回，**段内不跨时间**；同秒跨边界是允许的（秒级粒度），故不宣称严格时间隔离。
-- **可验证的预测**：三段切分的 test 段与现有两段切分的 test 段**逐条相同**（同一条规则、同一份排序）。试点两段实测 `rows=304,944 / train=244,752 / test=60,192`，因此本计划预期 `test=60,192`、`train≈195,802`、`val≈48,950`；运行后必须核对（见 §5 任务 1 步骤 2）。
-- 「保留测试段」本轮**完全不使用**：不参与训练、不参与评测、不参与候选集与支持度统计。理由如实记录：它已被试点使用过，不是全新盲测。注意验证段来自上轮训练段，故「未被评测过」成立、「从未被模型见过」不成立——只影响叙事，不影响本轮有效性。
+本轮重新训练，仅使用新训练段拟合，验证段选参数；保留测试段不参与拟合、评测、候选或支持度统计。它曾被旧试点使用，不能称为全新盲测。本轮结果属于探索性验证。
 
-### 3.2 候选集与正例
+### 指标
 
-- 候选集 = **本次 64% 训练段**出现过的全部电影（无门槛，逐组重算但同一切分下完全相同）。
-- 正例 = 验证集中 rating ≥ 4.0 的电影。
-- 排除该用户训练段已评分电影；并列分数按 movieId 升序决胜（沿用 `run_pilot.py` 的 `np.lexsort`）。
+- **候选与用户**：候选为本次训练出现的全部电影，排除该用户训练中已评分电影。正例为验证中评分 ≥4 的电影。至少有一个正例的用户参与排序均值；正例全在候选外者仍计入，指标为 0。各组与 MostPop 使用完全相同的用户，记录纳入和排除人数。
+- **Recall@20 / NDCG@20**：二元相关。Recall 分母为全部去重正例数；NDCG 的 IDCG 按 `min(正例数, 20)` 计算。候选外正例仍计入相关集合，不能静默剔除。
+- **正例可推荐比例**：`recommendable_positive_ratio = |正例 ∩ 候选| / |正例|`，按上述同一批用户平均；空正例返回 None。它只描述候选覆盖情况，不是 Hit Rate。
+- **RMSE**：只评估训练中出现的电影，断言验证用户均在训练中；报告有效条数与冷物品剔除数。使用未截断预测，同时给出相同条目上的 Const(μ) 基线。
+- **两个越界率**：越界为 `pred < 0.5 或 pred > 5.0`。A 为有效验证预测中的越界比例；B 为参与排序评测用户实际返回的全部 Top-20 条目中的越界比例，分母为实际返回条数。分别报告比例、分母和原始分最小/最大值；零分母记 N/A，非有限预测报错。MostPop 无预测分，记 N/A。不预设 A、B 大小关系，不设通过阈值。
+- **支持度**：只统计训练评分数；把各用户实际推荐条目合并，保留跨用户重复推荐后取支持度中位数。仅用于诊断，不作为胜负标准。
 
-### 3.3 排序指标与用户口径
+## 3. 最少代码改动与训练监控
 
-- `Recall@20` / `NDCG@20`：沿用 `experiments/pilot/metrics.py`，分母 `|relevant|` 为**全量去重**，即训练候选之外的（不可命中）正例**仍计入分母并记未命中**。
-- 新增 `hit_ratio`（正例可推荐比例）= `|relevant ∩ 候选| / |relevant|`，**按用户平均**，与 Recall/NDCG 同口径、同一批用户。
-- **同一批用户** = 至少有 1 条正例的用户；各模型一致（该筛选与模型无关）。**正例全部不可命中的用户仍计入**，Recall/NDCG 记 0。报告该批用户数与排除的用户数。
-- 排序指标只报验证集。
-
-### 3.4 RMSE
-
-- 只对「训练中已出现的 user 与 item」计算：冷物品（不在候选集）按 MLlib `coldStartStrategy=drop` 口径剔除；本轮切分下 user 侧天然全中，仍作为断言而非过滤器。
-- 预测使用**原始分，不先截断**；同时报 `Const(μ)` 基线。
-- 报告**有效条数与剔除条数**。
-
-### 3.5 越界率（两个口径，区间 `[0.5, 5.0]`）
-
-越界 = `pred < 0.5 或 pred > 5.0`（MovieLens 半分制；下限由初稿的 1.0 修正为 0.5）。**两个口径分别统计，不得互相替代，也不得合并成一列**：
-
-| 口径 | 分子 / 分母 |
+| 文件 | 改动 |
 |---|---|
-| A 验证评分预测越界率 | 越界的有效验证条数 / 有效验证条数（同 §3.4 的剔除口径） |
-| B Top-20 越界率 | 所有参与评测用户的 Top-20 推荐（**未截断**预测分）中越界条数 / `用户数 × 20` |
+| `experiments/pilot/data.py` | 追加三段切分函数 |
+| `experiments/pilot/als.py` | 新增 `objective()`；追加可选 `on_iter` 回调，保留 `(model, losses)` 返回契约和默认行为 |
+| `experiments/pilot/metrics.py` | 新增 `recommendable_positive_ratio()`，保留旧指标契约 |
+| `experiments/pilot/run_pilot.py` | 增加网格模式，使用三段切分及上述指标；显式传入分区数、验证比例和模型选择。保留旧两段运行模式，避免旧试点复现命令静默改变含义 |
+| `tests/test_pilot_data.py`、`tests/test_pilot_als.py`、`tests/test_pilot_metrics.py` | 覆盖新增切分边界、手算目标值与指标；验证双越界口径及候选不足 20 条的分母 |
 
-- Top-20 分 = `μ + b_u + b_i + p_u·q_i`，不截断。
-- MostPop / Random 没有预测分 → 该列记 **N/A**，不要填 0。
-- 与试点报告的 0.1388% 不可直接比较（判据下限与切分都变了），表里注明。
-- 预期：B 通常**高于** A（取头部等价于按分数选样，天然偏向分布尾部），见 §7。
+网格模式建议用 `--split three-way --val-frac 0.2 --num-slices 16 --models als`，MostPop 使用 `--models mostpop`，该分支不训练 ALS。不要求新增图表。
 
-### 3.6 支持度（诊断项，不参与判据）
+每轮记录训练 RMSE 和含正则目标总和：
 
-- 支持度按**本次 64% 训练段**统计（不含 val/test，不含全量）。
-- 「Top-20 支持度中位数」= 把所有参与评测用户的 Top-20 条目**合并成一个池**后取中位数。
-- 附录可另报「每用户 Top-20 内中位数 → 再对用户取平均」，仅作诊断。
-- 支持度只用于解释现象，**不参与胜负判据**。
-
-### 3.7 逐轮目标值与收敛判定
-
-新增纯函数（`experiments/pilot/als.py`）：
-
-```python
-def objective(rows, mu, bu, bi, P, Q, lam):
-    """带正则的训练目标值（总和，不取平均）：
-       Σ (r - r_hat)^2
-       + λ (Σ_u n_u ||p_u||^2 + Σ_i n_i ||q_i||^2 + Σ_u n_u b_u^2 + Σ_i n_i b_i^2)
-    n_u / n_i 为训练段中各自的观测数；μ 不参与正则。
-    """
+```text
+J = Σ(r - r_hat)²
+    + λ[Σ_u n_u(||p_u||² + b_u²) + Σ_i n_i(||q_i||² + b_i²)]
 ```
 
-- `fit_spark` 增加 `on_iter=None` 回调，每轮算完 RMSE 后调用 `on_iter(iter_index, snapshot, loss)`，`snapshot` 为当轮 `{'mu','bu','bi','P','Q'}`。**返回值仍是 `(model, losses)` 两元组**（`smoke_als.py` 的 `_, losses = …` 与 `run_pilot.py` 的解包都不受影响）；不把 objectives 塞进 model dict。
-- 报两个序列：`train_rmse_iter1..10`（已有）与 `objective_iter1..10`（新增，含正则）。objective 用**总和**（RMSE 已单列，避免两个平均口径互相污染）。
-- 收敛判定：`objective[10] / objective[1]`，以及末轮相对降幅 `(objective[9] - objective[10]) / objective[9]`。末轮相对降幅 < 1% 记「本轮预算内基本收敛」，否则记「未收敛（只报告 10 轮预算下的表现）」。该判定只影响措辞，**不改变 9 组全跑**。
+`on_iter` 在每轮完成后提供当轮模型与 RMSE，调用方计算并保存标量 J，不保留每轮模型副本。目标计算避免额外展开完整的“评分条数 × rank”矩阵。
 
-### 3.8 资源统计口径
+**只描述目标变化，不凭一轮证明收敛：**
 
-- 复用 `experiments/pilot/vm_monitor.sh`，每组单独包一次，便于按组归因。
-- 该脚本的 `java_rss_mb` = 用户 `h` 名下所有 `java|SparkSubmit` 进程 RSS 之和；`python_rss_mb` = 所有 `python` 进程 RSS 之和。报告必须写成这两个统计范围，**不得写成 driver 内存**。
-- 报告字段：环境（nproc / mem / swap / Spark / Java / Python）、每组墙钟、峰值 swap、峰值 `java_rss_mb`、峰值 `python_rss_mb`。
+- 记第 t 轮目标为 J_t（数学编号 1～10；Python 列表下标 0～9），检查所有目标有限。
+- 逐轮检查 `J_t - J_(t-1) <= 1e-8 × max(1, |J_(t-1)|)`；超过容差的上升标为目标异常，先核查实现，不记为收敛，不纳入配置优劣比较。
+- 保存所有目标值、首末轮比值及最后三次相对变化。相对变化分母使用 `max(|J_(t-1)|, 1e-12)`。
+- 在目标无异常的前提下，最后三次相对变化的绝对值均 <1%，仅标注“末三轮目标变化较小（启发式）”；否则标注“本预算下仍有明显变化”。两者都不等于证明收敛，不在本轮自动追加迭代。
+- 不同 λ 对应不同目标函数，不能用目标总值横向选优。
 
-## 4. 文件结构与代码改动清单
+## 4. 执行顺序
 
-本轮只动 `experiments/pilot/` 与 `tests/`，**不碰 `backend/`、`frontend/`、`spark/`、生产数据库**。
+- [x] **核对数据**：复核切片及 HDFS 输入指纹，记录环境和固定配置。指纹不符先查原因，不静默换数据。
+- [x] **实现与单测**：先写新增行为的测试，再实现最少改动。手算检查切分、正例可推荐比例、两个越界率及 objective（λ=0 时等于 `n × RMSE²`，λ>0 时补足因子和偏差正则）。保留旧契约测试。
+- [x] **真实切片协议检查**：实现完成后统计三段、候选及评测用户规模；确认 test 与原切分相同、所有组合口径相同。结果写入 `PRECHECK.md`。
+- [x] **同步与 VM 检查**：同步并核对全部实验运行依赖的文件哈希，至少包括 `data.py`、`als.py`、`metrics.py`、`baselines.py`、`run_pilot.py`、`smoke_als.py`、`vm_monitor.sh`。用 VM Python 3.6 做语法编译及实际导入/冒烟检查；开发机 `compileall` 不能代替此项。确认 HDFS 输入可读后再运行。
+- [x] **基线与网格**：MostPop 跑一次；9 组 ALS 串行运行，每组使用独立进程、输出目录、日志与资源采样。所有 CLI 固定项显式传入，每组记录完整命令、耗时和退出状态。
+- [x] **汇总后停止**：取回产物，生成结果表与简短结论。不自动细化网格、加模型或扩大数据。
 
-| 文件 | 动作 | 说明 |
-|---|---|---|
-| `experiments/pilot/data.py` | 修改（追加） | 新增 `temporal_split_three_way`；`temporal_split` 一行不改 |
-| `experiments/pilot/als.py` | 修改（追加/小改） | 新增 `objective()`；`fit_spark` 加 `on_iter=None` 参数（默认行为与返回契约不变） |
-| `experiments/pilot/run_pilot.py` | 修改 | 三段切分；candidates 取 64% 训练段；新增 `--num-slices`（默认 16）、`--val-frac`（默认 0.2）、`--models`（`all`/`als`/`mostpop`，默认 `all`）；越界双口径；`hit_ratio`；Top-20 支持度中位数；objective 序列；输出 `grid_row.csv`（单组一行） |
-| `experiments/pilot/plots.py` | 可选修改 | 若出图，`fig_pred_dist` 的越界判据同步改为 `0.5`（当前是 `1.0`），否则图注与表不一致 |
-| `tests/test_pilot_data.py` | 修改（追加） | 三段切分：边界 n=1/2/3/4/10/100、三段并集 == 全集、逐用户时间递增、确定性、输入行序不变、test 段与两段切分逐条相同 |
-| `tests/test_pilot_als.py` | 修改（追加） | `objective`：λ=0 时 == `n·RMSE²`（手算对拍）；λ>0 时 == λ=0 值 + `λ × Σ(n_u‖p_u‖² + n_i‖q_i‖² + n_u b_u² + n_i b_i²)` 手算值；因子与偏置全 0 时正则项为 0 |
-| `tests/test_pilot_metrics.py` | 修改（追加） | `hit_ratio` 手算对拍（分母含不可命中正例、空集返回 None） |
-| `experiments/pilot/out/grid/` | 产物 | 结果 CSV、`conclusion.md`、`PRECHECK.md`、每组 run 目录与 `*.log`；**`*.csv` 被 `.gitignore:31` 忽略**，进 git 的是 `conclusion.md`（内嵌结果表）与 `PRECHECK.md` |
-
-`run_pilot.py` 新增输出（每组一个目录）：
-
-| 文件 | 内容 |
-|---|---|
-| `results.csv` | 每个模型的 `recall@20` / `ndcg@20` / `hit_ratio` / `users_scored` |
-| `rmse.csv` | ALS 与 Const(μ) 的 RMSE |
-| `summary.csv` | `val_pred_out_of_range`、`top20_out_of_range`、`top20_support_median`、`valid_rows`、`dropped_cold`、`users_scored`、`excluded_no_positive`、`train_rmse_iter1..10`、`objective_iter1..10`、`wall_clock_s` |
-| `grid_row.csv` | 单组一行：rank / reg / ndcg@20 / recall@20 / rmse / val_pred_out_of_range / top20_out_of_range / top20_support_median / wall_clock_s（`exit_status` 与 `code_rev` 由 §5 任务 5 的外层循环记录后，在任务 6 汇总时补齐——`run_pilot.py` 自己不知道退出码，也不该在 VM 上调 git） |
-
-## 5. 执行步骤
-
-### 任务 1：口径自检（先证协议能识别模型、手算样例对得上）
-
-**文件：** 无改动；使用 `experiments/pilot/` 现有代码 + 少量合成数据。
-
-- [ ] **步骤 1：核对切片指纹与代码版本**
+本地相关测试命令：
 
 ```powershell
-# 开发机
-backend/venv/Scripts/python.exe -c "import hashlib;print(hashlib.md5(open('data/processed/pilot_ratings.csv','rb').read()).hexdigest())"
-git rev-parse --short HEAD
-```
-预期：`736601f707fc6b048bae46caaf154ee9`；HEAD = 本计划所在提交。
-
-- [ ] **步骤 2：三段切分手算对拍**
-
-用 10 条单一用户评分（ts=1..10）跑 `temporal_split_three_way`，预期 `(train 7, val 1, test 2)`；用 n=2 的用户验证 `(1, 0, 1)`；用 n=1 验证 `(1, 0, 0)`。再用真实切片统计三段规模，预期 `test=60,192`、`train≈195,802`、`val≈48,950`。
-运行：`backend/venv/Scripts/python.exe -m unittest tests.test_pilot_data -v`
-预期：全绿（含新增三段用例）。
-
-- [ ] **步骤 3：指标与越界口径手算对拍**
-
-构造 6 条验证数据（含 1 条不可命中正例、1 条 `pred=0.4` 越界、2 条 Top-20 越界），手算 Recall/NDCG/`hit_ratio`/两个越界率，与代码输出逐项比对。
-运行：`backend/venv/Scripts/python.exe -m unittest tests.test_pilot_metrics tests.test_pilot_als -v`
-预期：全绿。
-
-- [ ] **步骤 4：记录本任务的指纹、代码版本与固定配置**
-
-写入 `experiments/pilot/out/grid/PRECHECK.md`（切片 md5、HEAD、固定项表格取自 §1）。
-
-### 任务 2：代码改动（TDD，逐文件）
-
-**文件：** 见 §4 清单。
-
-- [ ] **步骤 1：写失败测试**（三段切分边界 / objective 手算 / hit_ratio 手算）
-- [ ] **步骤 2：运行验证失败**
-
-运行：`backend/venv/Scripts/python.exe -m unittest tests.test_pilot_data tests.test_pilot_als tests.test_pilot_metrics -v`
-预期：FAIL / ImportError 或 AttributeError（新函数不存在）。
-
-- [ ] **步骤 3：写最少实现**（`temporal_split_three_way`、`objective`、`fit_spark(on_iter=…)`、`run_pilot.py` 的 CLI 与输出）
-- [ ] **步骤 4：运行验证通过**
-
-运行：`backend/venv/Scripts/python.exe -m unittest tests.test_pilot_data tests.test_pilot_als tests.test_pilot_metrics -v`
-预期：全绿；且 `temporal_split` 的 5 个旧用例仍全绿。
-
-- [ ] **步骤 5：语法与 Py3.6 兼容门**
-
-运行：`backend/venv/Scripts/python.exe -m compileall -q experiments/pilot tests/test_pilot_data.py tests/test_pilot_als.py tests/test_pilot_metrics.py`
-预期：无输出（成功）。VM 是 Python 3.6.8：f-string 可用，但不得用 3.7+ 独有语法（`dataclasses`、`from __future__ import annotations`）或 3.8+ 的赋值表达式。
-
-- [ ] **步骤 6：Commit**
-
-```bash
-git add experiments/pilot/data.py experiments/pilot/als.py experiments/pilot/run_pilot.py tests/test_pilot_data.py tests/test_pilot_als.py tests/test_pilot_metrics.py
-git commit -m "feat: 网格实验三段切分/含正则目标值/越界双口径"
+backend/venv/Scripts/python.exe -m unittest tests.test_pilot_data tests.test_pilot_als tests.test_pilot_metrics -v
 ```
 
-### 任务 3：同步到 VM 并做前置检查
+运行前记录 Git HEAD、是否有未提交修改，以及实际执行文件的哈希清单；VM 与开发机逐文件核对。存在未提交改动时，单独一个 commit ID 不足以标识实验代码。
 
-- [ ] **步骤 1：同步实验代码**
+失败组保留退出码、日志与失败原因，可继续其他组；涉及公共切分、目标函数等正确性问题时先停止排查，不用错误结果继续比较。若中途修复公共代码，先前结果标明旧代码版本，不能混进同一张公平比较表。重跑使用新目录，不覆盖原记录。
 
-```powershell
-scp -o UserKnownHostsFile=NUL -o StrictHostKeyChecking=no experiments/pilot/data.py experiments/pilot/als.py experiments/pilot/run_pilot.py h@192.168.10.102:/home/h/project/experiments/pilot/
-```
-（VM 现有 `als.py`/`run_pilot.py`/`metrics.py` 与分支 tip 逐字节一致，只有 `data.py`/`baselines.py` 差注释，同步后复核 md5。）
+资源监控复用 `vm_monitor.sh`，注明：RSS 是用户 h 名下所有 Java / Python 进程之和，不能称为 driver 内存；swap 是系统全局口径。每组记录墙钟时间、峰值 RSS 和 swap，不据一次运行推断稳定容量上限。
 
-- [ ] **步骤 2：复核 VM 侧 md5 与 HDFS 就绪**
+## 5. 交付与判断
 
-```powershell
-ssh -o UserKnownHostsFile=NUL -o StrictHostKeyChecking=no h@192.168.10.102 "md5sum /home/h/project/experiments/pilot/{data.py,als.py,run_pilot.py}; hdfs dfs -ls -h /movielens/pilot/"
-```
-预期：md5 与开发机一致；`/movielens/pilot/ratings.csv` 在（约 8.0 M）。
+本地产物保存到 `experiments/pilot/out/grid/<run_id>/`；VM 对应 `/home/h/pilot_out/grid/<run_id>/`。保留每组原始 CSV、目标序列、配置、日志、资源记录及文件哈希；汇总生成 `summary_table.csv` 和 `conclusion.md`，前置检查保存为 `PRECHECK.md`。
 
-- [ ] **步骤 3：冒烟（合成 12 条，确认训练链路仍通）**
+结果表：`rank / λ / NDCG@20 / Recall@20 / RMSE / 验证预测越界率 / Top-20 越界率 / Top-20 支持度中位数 / 耗时 / 状态 / 代码标识`。MostPop 只出现一行，无评分预测的列记 N/A；失败组指标记 N/A，附原因，不要求生成完整结果文件。候选覆盖、有效条数、人数、预测范围与目标序列保存在配套记录中。
 
-```powershell
-ssh -o UserKnownHostsFile=NUL -o StrictHostKeyChecking=no h@192.168.10.102 "cd /home/h/project/experiments/pilot && spark-submit --master 'local[*]' smoke_als.py 2>&1 | tail -3"
-```
-预期：`SMOKE OK losses=['0.3979', '0.2286', '0.1948']`（±1e-3 黄金值）。
+验收以 **9 组均有状态记录、成功组结果完整、失败组原因明确** 为准，不以模型必须超过基线为准。结果表同时内嵌结论文档，CSV 在忽略规则内也能审阅。
 
-### 任务 4：MostPop 参照（只跑一次，9 组共用）
+结论只回答：
 
-- [ ] **步骤 1：按同一套三段切分跑 MostPop**
+1. 哪些配置较好？主看验证 NDCG@20，辅看 Recall@20，兼顾 RMSE 和成本；与参照组及 MostPop 报绝对差，参照为 0 时不计算相对提升。
+2. 固定 rank 改 λ、固定 λ 改 rank，观察到了什么？不预设变化方向，不把指标不变解释成排序不变，也不把全部变化归因于某个因子。
+3. 目标是否趋于平稳？所有结果均注明“固定 10 轮预算”，不能据此断言充分训练后的优劣。
+4. 是否值得后续验证？效果接近时优先低维、低成本配置；最佳值在边界也仅提出建议。本轮不声明全局最优、统计显著或病因已被证明。
 
-```powershell
-ssh -o UserKnownHostsFile=NUL -o StrictHostKeyChecking=no h@192.168.10.102 "cd /home/h/project/experiments/pilot && spark-submit --master 'local[*]' run_pilot.py --input hdfs:///movielens/pilot/ratings.csv --out /home/h/pilot_out/grid/mostpop --models mostpop --num-slices 16 --top-n 20 --seed 42 --val-frac 0.2 2>&1 | tail -5"
-```
-预期：`results.csv` 只有 MostPop 一行；`users_scored` 与 9 组一致。
+不自动 `git commit` 或 `git push`。只有用户明确要求提交后，才先展示变更摘要、核对暂存范围并使用简洁英文提交信息；不得带入其他任务改动，不为实验产物修改忽略规则。
 
-### 任务 5：串行跑 9 组
+## 6. 执行记录（2026-10-03）
 
-- [ ] **步骤 1：启动 HDFS（若未起）并确认**
+已完成 MostPop 1 组和 ALS 9 组，均为 success；完成后停止，未扩大网格。产物目录：`experiments/pilot/out/grid/20261003T125319Z/`。
 
-```powershell
-ssh -o UserKnownHostsFile=NUL -o StrictHostKeyChecking=no h@192.168.10.102 "jps"
-```
-预期：含 `NameNode`、`DataNode`（2026-10-03 已实测在跑）。
-
-- [ ] **步骤 2：串行执行 9 组（每组独立进程 + 独立资源采样 + 记录退出状态）**
-
-```bash
-# VM 上执行；产物落 /home/h/pilot_out/grid/rank{R}_reg{L}/
-# CODE_REV 由开发机记下后带进来（VM 的 /home/h/project 不是 git 仓库）：
-#   开发机执行 git rev-parse --short HEAD，然后 CODE_REV=<值> bash run_grid.sh
-mkdir -p /home/h/pilot_out/grid
-cd /home/h/project/experiments/pilot
-echo "rank,reg,wall_clock_s,exit_status,code_rev" > /home/h/pilot_out/grid/status.csv
-for R in 10 30 50; do
-  for L in 0.01 0.1 1.0; do
-    OUT=/home/h/pilot_out/grid/rank${R}_reg${L}
-    T0=$(date +%s)
-    ./vm_monitor.sh /home/h/pilot_out/grid/resource_rank${R}_reg${L}.csv \
-      spark-submit --master 'local[*]' run_pilot.py \
-        --input hdfs:///movielens/pilot/ratings.csv --out "$OUT" \
-        --rank $R --reg $L --iters 10 --top-n 20 --seed 42 --num-slices 16 \
-        --models als > "$OUT.log" 2>&1
-    RC=$?; T1=$(date +%s)
-    echo "$R,$L,$((T1-T0)),$RC,${CODE_REV:-unknown}" >> /home/h/pilot_out/grid/status.csv
-  done
-done
-```
-
-- [ ] **步骤 3：逐组核对与失败处理**
-
-每组必须存在 `results.csv` / `rmse.csv` / `summary.csv` / `grid_row.csv` 且 `exit_status=0`。**失败如实记录**（保留 `*.log` 尾部与退出码），继续下一组；**不中途更换数据、候选集或切分**。
-
-- [ ] **步骤 4：取回产物**
-
-```powershell
-scp -o UserKnownHostsFile=NUL -o StrictHostKeyChecking=no -r h@192.168.10.102:/home/h/pilot_out/grid experiments/pilot/out/
-```
-
-### 任务 6：汇总与结论
-
-- [ ] **步骤 1：生成结果表（`experiments/pilot/out/grid/summary_table.csv`）**
-
-列：`rank / λ / NDCG@20 / Recall@20 / RMSE / 验证预测越界率 / Top-20 越界率 / Top-20 支持度中位数 / 耗时`；MostPop 参照**只出现一行**，其越界列记 N/A。每行附 `exit_status` 与代码版本。
-
-> **注意：`.gitignore:31` 是 `*.csv`，CSV 产物进不了 git。** 因此交付的「结果 CSV」留在实验目录（本地/VM 产物，可追溯），而**进 git 的那份表必须内嵌进 `conclusion.md`**（见步骤 2）；不要为了提交 CSV 去改 `.gitignore`。
-
-- [ ] **步骤 2：写简短结论（`experiments/pilot/out/grid/conclusion.md`）**
-
-必须回答 4 问：**哪个配置较好、改善多少（相对参照组 rank=50/λ=0.1 与 MostPop）、是否收敛（末轮相对降幅）、是否值得继续**；并逐条给出 §7 两条假设的判读。不做全局最优声明。**`summary_table.csv` 的同表以 markdown 表格内嵌在本文件里**（这是进 git 的结果表）。
-
-- [ ] **步骤 3：出图（可选）**
-
-若出图，`plots.py` 的越界判据同步改为 `0.5`，避免图注与表不一致。
-
-### 任务 7：提交（严格限定范围）
-
-- [ ] **步骤 1：确认未把主工作区的脏改动带进来**
-
-本分支工作区存在 21 个与本次实验无关的未提交改动（`AGENTS.md`、`README.md`、`backend/`、`frontend/`、`tests/test_online_recommender.py` 等）。提交时**只 add 本次实验相关文件**：
-
-```bash
-git add experiments/pilot/data.py experiments/pilot/als.py experiments/pilot/run_pilot.py \
-        tests/test_pilot_data.py tests/test_pilot_als.py tests/test_pilot_metrics.py \
-        docs/superpowers/plans/2026-10-03-classic-als-small-grid.md
-git status --short   # 复核暂存区不含上述 21 个文件
-```
-
-- [ ] **步骤 2：提交产物与结论（文本 md，不含大 CSV 与 PNG）**
-
-```bash
-git add experiments/pilot/out/grid/conclusion.md experiments/pilot/out/grid/PRECHECK.md
-git commit -m "docs: rank×λ 网格实验结论与结果表"
-```
-
-（`*.csv` 被 `.gitignore:31` 忽略，`summary_table.csv` 与各组 `results.csv` 默认**不进 git**；若确实要提交结果 CSV，用 `git add -f` 并在此说明绕过了 `*.csv` 规则——默认不做。不要为了提交产物去改 `.gitignore`。）
-
-## 6. 判断与停止条件
-
-- 以**验证 NDCG@20 为主、Recall@20 为辅**；同时展示 RMSE 与成本，**不用 RMSE 单独决定推荐模型优劣**。
-- 越界率**本轮不设阈值**（试点那 0.1% 判据随协议变更作废），只报告两个口径的数字与越界幅度（max/min）。
-- 检查末轮相对降幅与总降幅。未收敛的配置只报告「10 轮预算下的表现」，**不得**据此断言其充分训练后的优劣。
-- 效果接近时优先保留更低维、更省资源的配置。
-- 本轮只推荐后续候选，**不宣称**获得全局最优参数，也不宣称证明某种病因。
-- 完成 9 组 + 简短结论即停止。**即使最佳值落在搜索边界**（rank=10 或 λ=1.0），也只提出后续建议：不自动细化网格、不扩到 20k 或 32M、不增加 ItemCF / 级联 / 收缩机制。
-
-## 7. 预先声明的假设（让 9 组结果可判读）
-
-| # | 假设 | 支持它的观测模式 | 若被证伪 |
-|---|---|---|---|
-| H1 | λ 从 0.1 升到 1.0 通过 `λ·n` 强收缩欠定物品因子，**提高验证 NDCG@20**，同时降低 Top-20 越界率与 Top-20 支持度中位数 | 三项同向变化 | 若 NDCG 不动而越界率/支持度下降 → 说明收缩只改尺度不改排序，与试点 §6「低支持度欠定」一致；若 λ=1.0 反而更差 → 记录该配置在本预算下不可用 |
-| H2 | rank 10/30/50 之间 NDCG 差异小于 λ 的影响（试点 rank 50 vs 100 已显示容量不救排序） | rank 三档接近、λ 三档有梯度 | 如实报告，不解释为「容量不足」以外的结论 |
-
-- 预期方向：Top-20 越界率 **高于** 验证预测越界率（Top-N 是按分数取头部，天然偏向分布尾部）。
-- λ 与 rank 在 `λ·n` 口径下**耦合**，报告不声称交互效应。
-
-## 8. 交付物与验收清单
-
-交付：一份结果 CSV、一份简短结论、可追溯的配置与运行记录。结论回答「哪个配置较好、改善多少、是否收敛、是否值得继续」。
-
-- [ ] 单测全绿：`backend/venv/Scripts/python.exe -m unittest tests.test_pilot_data tests.test_pilot_als tests.test_pilot_metrics -v`
-- [ ] 旧契约未破：`temporal_split` 的 5 个用例、`metrics` 的 19 个用例仍全绿
-- [ ] 三段规模核对通过：`test=60,192`（与两段切分逐条相同），`train+val+test == rows`
-- [ ] 9 组 `grid_row.csv` 齐全，`exit_status` 逐组记录（失败也保留）
-- [ ] 汇总表列齐全（§5 任务 6 步骤 1 的 9 列 + 状态 + 版本），且同表已内嵌 `conclusion.md`（CSV 被 `.gitignore` 的 `*.csv` 忽略，不能作为唯一交付）
-- [ ] 两个越界口径都有独立数字；MostPop 的越界列是 N/A
-- [ ] MostPop 参照在表中只出现一行
-- [ ] `objective_iter1..10` 与 `train_rmse_iter1..10` 都在 `summary.csv` 里
-- [ ] 资源报告注明 RSS 统计范围（全部 java / 全部 python 进程，非 driver）
-- [ ] 提交暂存区不含 §5 任务 7 列出的 21 个无关脏改动
-- [ ] 切片指纹 `736601f707fc6b048bae46caaf154ee9`、代码版本、固定配置三者与运行记录一致
-
-## 9. 范围外（明确不做）
-
-- 不扩数据集（不上 20k、不上全量 32M）；不新增 ItemCF、级联、收缩、隐式反馈目标。
-- 不做 bootstrap CI、分层热力图、多路召回对比。
-- 不改应用代码、不写生产数据库、不发布模型版本（`model_versions` 保持 `active` 不变）。
-- 不自动细化网格（不补 rank=20/40 或 λ=0.3/3.0），即使最佳值落在边界。
+- 完整结果与结论：[conclusion.md](../../../experiments/pilot/out/grid/20261003T125319Z/conclusion.md)。
+- 前置核对：[PRECHECK.md](../../../experiments/pilot/out/grid/20261003T125319Z/PRECHECK.md)；完整配置、环境和实际代码哈希见同目录 `manifest.json`。
+- 本地 53 条 pilot 相关测试通过；VM Python 3.6 编译、导入和真实 Spark 冒烟通过；全部原始指标独立重算核对一致，见 `verification.json`。
+- 本机原 backend/venv 无法启动，实际本地测试使用 `C:/ProgramData/anaconda3/python.exe`；训练仍使用 VM Python 3.6.8。
+- 所有 ALS 的 NDCG@20/Recall@20 低于 MostPop；ALS 内最佳排序为 rank=50、λ=0.01，最低 RMSE 为 rank=50、λ=0.1。以上均仅为本次固定 10 轮预算的探索性验证结论。
+- 原地保留代码与结果，未 commit/push，未修改应用或生产数据库。

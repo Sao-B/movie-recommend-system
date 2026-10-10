@@ -16,6 +16,23 @@
 import math
 
 
+def recommendable_positive_ratio(relevant, candidates):
+    rel = set(relevant)
+    return len(rel & set(candidates)) / float(len(rel)) if rel else None
+
+
+def prediction_bounds(predictions):
+    values = [float(p) for p in predictions]
+    if any(not math.isfinite(p) for p in values):
+        raise ValueError('non-finite prediction')
+    count = len(values)
+    outside = sum(p < 0.5 or p > 5.0 for p in values)
+    return dict(count=count, out_of_range_count=outside,
+                rate=outside / float(count) if count else None,
+                minimum=min(values) if count else None,
+                maximum=max(values) if count else None)
+
+
 def recall_at_k(recommended, relevant, k):
     if not relevant:
         return None

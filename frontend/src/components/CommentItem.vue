@@ -32,15 +32,17 @@
       @save="saveEdit"
     >
       <div class="edit-rate-row">
-        <span class="rate-user">{{ authorName }}</span>
-        <el-rate
-          :model-value="draftRating"
-          @update:model-value="draftRating = $event"
-          :max="5"
-          allow-half
-          show-score
-          size="small"
-        />
+        <UserAvatar :src="comment.avatar_url" :name="authorName" :size="34" />
+        <div class="rate-line">
+          <span class="rate-user">{{ authorName }}</span>
+          <el-rate
+            :model-value="draftRating"
+            @update:model-value="draftRating = $event"
+            :max="5"
+            allow-half
+            size="small"
+          />
+        </div>
       </div>
     </CommentEditForm>
 
@@ -348,7 +350,7 @@ async function remove() {
   margin-left: auto;
 }
 
-/* 编辑区：署名（昵称优先、回落账号）+ 可点的星星在上，正文框在下 */
+/* 编辑区：头像在左，名字（缩小一号）在上、星星紧贴其下，两行成一列与头像垂直居中（与录入区同一套） */
 .edit-rate-row {
   display: flex;
   align-items: center;
@@ -356,7 +358,20 @@ async function remove() {
   margin-bottom: 10px;
 }
 
+/* 名字在上、星星在下；el-rate 自带固定盒高（图标只有 18px），放开成 auto 免得两行间被撑出空隙 */
+.rate-line {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.rate-line :deep(.el-rate) {
+  height: auto;
+}
+
 .rate-user {
+  font-size: 14px;
   font-weight: 600;
   color: var(--app-text);
 }

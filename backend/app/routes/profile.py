@@ -8,6 +8,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import func, desc
 from app.db import db
 from app.models import UserRating, Movie, MovieComment, User
+from app.genres import CANONICAL_GENRES, MAX_FAVORITE_GENRES
 from app.pagination import get_pagination
 
 profile_bp = Blueprint('profile', __name__, url_prefix='/api/profile')
@@ -171,6 +172,19 @@ def update_user_info():
         if bio and len(bio) > 500:
             return jsonify({"error": "个人签名不能超过500个字符"}), 400
         user.bio = bio if bio else None
+
+    # 更新偏好类型：列表 1..5 项、每项必须是标准类型；空数组 = 明确跳过；
+    # 请求里不带这个字段 = 维持原值（首次弹窗与否由 NULL/'[]' 语义区分）。
+    if "favorite_genres" in data:
+        genres = data["favorite_genres"]
+        if not isinstance(genres, list):
+            return jsonify({"error": "favorite_genres 必须是数组"}), 400
+        if len(genres) > MAX_FAVORITE_GENRES:
+            return jsonify({"error": "最多选择 %d 个类型" % MAX_FAVORITE_GENRES}), 400
+        invalid = [g for g in genres if g not in CANONICAL_GENRES]
+        if invalid:
+            return jsonify({"error": "未知类型: %s" % ", ".join(map(str, invalid))}), 400
+        user.set_favorite_genres([str(g) for g in genres])
 
     db.session.commit()
 

@@ -26,6 +26,24 @@ als:
   cold_start_strategy: drop
   train_ratio: 0.8
   top_n: 20
+  # 候选集门槛已移除（2026-10-01）：原先的 min_rating_count（可辨识性门槛）
+  # 整体删除，在线推荐现在对全量因子排序。
+
+# ItemCF 在线推荐（可选）
+# model_dir 指向 experiments/itemcf 全量训练产物目录（含 model.json 与 7 个 .npy，
+# 哈希链在 model.json 里）。留空 = 不启用 GET /api/recommendations/?model=itemcf。
+itemcf:
+  model_dir: ""
+  top_n: 20
+
+# V4 三路融合推荐（可选）：ItemCF裸求和 + 门控ALS折入 + 类型匹配。
+# enabled=true 时提供 GET /api/recommendations/?model=fusion。
+fusion:
+  enabled: false
+  weights: [0.4, 0.5, 0.1]
+  als_min_support: 1000
+  als_top_k: 500
+  top_n: 20
 
 # Flask
 # 注意：port 必须与 frontend/vite.config.js 的 proxy target 保持一致。

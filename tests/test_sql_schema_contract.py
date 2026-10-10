@@ -79,6 +79,53 @@ class SqlSchemaContractTests(unittest.TestCase):
                 f"movies.{col} 宽度小于 fetch_posters.py 的截断上限 {limit}",
             )
 
+    def test_orm_column_widths_match_schema(self):
+        """ORM 的 VARCHAR 列宽必须与 schema.sql 一致。
+
+        背景：migrations/009 把 movies.writers / countries / languages 加宽到
+        VARCHAR(500)（countries 实测最长 258 字符），但当时只改了 SQL，
+        ``backend/app/models.py`` 仍是 ``Text`` / ``String(200)``。
+        线上库不受影响（SQLAlchemy 读取时不按声明宽度校验），但用 ``create_all()``
+        建库会重新建出过窄的列，撞上 fetch_posters.py 的 "Data too long"。
+        这里把两侧锁死，防止再次漂移。
+        """
+        import sys as _sys
+
+        backend = str(PROJECT_ROOT / "backend")
+        if backend not in _sys.path:
+            _sys.path.insert(0, backend)
+
+        from sqlalchemy import String  # noqa: PLC0415
+
+        from app.models import Movie  # noqa: PLC0415
+
+        schema = (PROJECT_ROOT / "sql" / "schema.sql").read_text(encoding="utf-8")
+        movies = re.search(
+            r"CREATE TABLE IF NOT EXISTS movies \((.*?)\n\)", schema, re.S
+        ).group(1)
+
+        checked = 0
+        for column in Movie.__table__.columns:
+            m = re.search(rf"(?m)^\s+`?{column.name}`?\s+VARCHAR\((\d+)\)", movies)
+            if not m:
+                continue  # schema 里不是 VARCHAR（如 TEXT 类列）——不比对宽度
+            expected = int(m.group(1))
+            self.assertIsInstance(
+                column.type, String,
+                f"movies.{column.name} 在 schema.sql 里是 VARCHAR({expected})，"
+                f"ORM 却声明为 {column.type}",
+            )
+            self.assertEqual(
+                column.type.length, expected,
+                f"movies.{column.name} 宽度不一致：schema={expected}, "
+                f"ORM={column.type.length}",
+            )
+            checked += 1
+
+        self.assertGreaterEqual(
+            checked, 6, f"只比对到 {checked} 个 VARCHAR 列，正则或模型可能已失效"
+        )
+
     def test_fetch_posters_keeps_progress_in_the_database(self):
         """抓取进度不落任何表——待办与失败记录就是 movies 里缺列的行。
 
