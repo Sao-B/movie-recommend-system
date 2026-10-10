@@ -25,8 +25,9 @@
 3. ``(userId, movieId)`` 唯一性检查：duplicate_policy 固定为 reject——
    发现重复直接失败（``full_train`` 默认即 reject；dedupe_keep_last 明确
    "正式全量训练不得使用"，故不提供）；
-4. 统计 ``n_all``（全部评分人数）/ ``n_like``（rating >= 阈值人数）、
-   item 全集（含零好评物品，数值升序）；
+4. 统计 ``n_all``（全部评分人数）/ ``n_like``（ polarity 集合人数：pos =
+   rating >= positive_threshold，neg = rating <= negative_threshold）、
+   item 全集（含零证据物品，数值升序）；
 5. 正样本（rating >= 阈值）自连接（同 userId，a.movieId < b.movieId）→
    无序对计数 → 双向展开，得到共现 ``c_ij``（整数计数，精确；
    ``c_ij >= 1`` 蕴含两端 ``n_like >= 1``，零好评物品天然无共现边）；
@@ -91,6 +92,8 @@ from experiments.itemcf import model_io as M  # noqa: E402
 
 #: 好评二值化阈值（与 full_train.POSITIVE_THRESHOLD 一致）。
 POSITIVE_THRESHOLD = 4.0
+#: 差评二值化阈值（polarity=neg 用；EDA 差评阈值探索的定稿值）。
+NEGATIVE_THRESHOLD = 2.0
 
 #: 每来源最大邻居数（与 full_train.MAX_K 一致）。
 MAX_K = 100
@@ -169,6 +172,14 @@ def parse_args(argv=None):
     parser.add_argument('--positive-threshold', type=float,
                         default=POSITIVE_THRESHOLD,
                         help='好评二值化阈值（默认 4.0，与 full_train 相同）')
+    parser.add_argument('--polarity', choices=('pos', 'neg'), default='pos',
+                        help='证据极性：pos=好评共现图（默认，部署正向路）；'
+                             'neg=差评共现图（rating <= negative_threshold，'
+                             'V5 负反馈罚项的证据来源）')
+    parser.add_argument('--negative-threshold', type=float,
+                        default=NEGATIVE_THRESHOLD,
+                        help='差评二值化阈值（默认 2.0，仅 polarity=neg 生效；'
+                             'EDA：<=2.0 覆盖 66%% 物品且误伤可控）')
     parser.add_argument('--run-id', default=None,
                         help='显式指定 run_id（默认 UTC 时间 + 随机短标识）')
     parser.add_argument('--edge-mode', choices=('streaming', 'dict'),
@@ -185,6 +196,8 @@ def parse_args(argv=None):
         parser.error('--beta must be finite and >= 0')
     if not np.isfinite(args.positive_threshold):
         parser.error('--positive-threshold must be finite')
+    if not np.isfinite(args.negative_threshold):
+        parser.error('--negative-threshold must be finite')
     if args.run_id is not None:
         M.verify_id_format(args.run_id, '--run-id')
     return args
@@ -559,12 +572,19 @@ def run_job(spark, args, log_fn=log):
 
     n_input_rows = ratings.count()
     n_users = ratings.select('userId').distinct().count()
-    positives = ratings.where(
-        F.col('rating') >= float(args.positive_threshold)
-    ).select('userId', 'movieId').persist()
-    n_positive_rows = positives.count()
-    log_fn('rows=%d users=%d positive_rows=%d (threshold=%r)'
-           % (n_input_rows, n_users, n_positive_rows, args.positive_threshold))
+    if args.polarity == 'neg':
+        evidence = ratings.where(
+            F.col('rating') <= float(args.negative_threshold)
+        ).select('userId', 'movieId').persist()
+    else:
+        evidence = ratings.where(
+            F.col('rating') >= float(args.positive_threshold)
+        ).select('userId', 'movieId').persist()
+    n_positive_rows = evidence.count()
+    log_fn('rows=%d users=%d polarity=%s evidence_rows=%d (threshold=%r)'
+           % (n_input_rows, n_users, args.polarity, n_positive_rows,
+              args.negative_threshold if args.polarity == 'neg'
+              else args.positive_threshold))
 
     item_ids = [int(r[0]) for r in
                 ratings.select('movieId').distinct()
@@ -578,13 +598,13 @@ def run_job(spark, args, log_fn=log):
                                      .agg(F.count(F.lit(1)).alias('n_all'))
                                      .collect())
     n_like_map = dict((int(r['movieId']), int(r['n_like']))
-                      for r in positives.groupBy('movieId')
-                                        .agg(F.count(F.lit(1))
-                                             .alias('n_like')).collect())
+                      for r in evidence.groupBy('movieId')
+                                       .agg(F.count(F.lit(1))
+                                            .alias('n_like')).collect())
     n_zero_like = sum(1 for item in item_ids if item not in n_like_map)
     log_fn('items=%d (zero-like=%d)' % (n_items, n_zero_like))
 
-    cooc = build_cooccurrence(spark, positives, log_fn=log_fn)
+    cooc = build_cooccurrence(spark, evidence, log_fn=log_fn)
     edges = build_graph_edges(spark, cooc, n_like_map, args.beta, args.top_k,
                               log_fn=log_fn,
                               streaming=(args.edge_mode == 'streaming'))
@@ -617,7 +637,9 @@ def run_job(spark, args, log_fn=log):
         'input_rows': int(n_input_rows),
         'n_items': int(n_items),
         'n_users': int(n_users),
+        'polarity': args.polarity,
         'positive_threshold': float(args.positive_threshold),
+        'negative_threshold': float(args.negative_threshold),
         'max_k': int(args.top_k),
         'beta': float(args.beta),
         'engine': 'pyspark',
@@ -633,7 +655,7 @@ def run_job(spark, args, log_fn=log):
             'rows': int(n_input_rows),
             'users': int(n_users),
             'items': int(n_items),
-            'positive_pairs': int(n_positive_rows),
+            'evidence_rows': int(n_positive_rows),
             'items_zero_like': int(n_zero_like),
             'engine': 'pyspark',
         },
@@ -675,11 +697,14 @@ def run_job(spark, args, log_fn=log):
         'model_id': model_id,
         'input': os.path.abspath(args.input),
         'engine': 'pyspark',
+        'polarity': args.polarity,
         'counts': {
             'input_rows': int(n_input_rows),
             'users': int(n_users),
             'items': int(n_items),
             'edges': int(n_edges),
+            # 键名保留 positive_pairs 以兼容 verify_full_model 的读取；
+            # polarity=neg 时语义为"差评证据行数"
             'positive_pairs': int(n_positive_rows),
         },
         'parameters': metadata['parameters'],
