@@ -354,7 +354,8 @@ class EndToEndSmokeTests(unittest.TestCase):
         with open(Path(out, "recommendations.csv"), encoding="utf-8") as handle:
             recs = list(csv.DictReader(handle))
         variants_seen = {row["variant"] for row in recs}
-        expected = set(F.VARIANT_NAMES) | {"V5_coverage_oriented"}
+        expected = (set(F.VARIANT_NAMES) | {"V5_coverage_oriented",
+                    "V6_label_freq", "V7_als_neg", "V8_pop_rerank"})
         self.assertEqual(variants_seen, expected)
         # V5（覆盖率导向选择）的调参记录与覆盖层报告必须存在
         tuning = json.loads(

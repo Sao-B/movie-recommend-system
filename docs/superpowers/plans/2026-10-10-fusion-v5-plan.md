@@ -59,7 +59,8 @@ V4 融合权重 (0.4, 0.5, 0.1) 为起点，V5 验证后在 tune 半重新网格
 - [x] 后端 V5：`backend/app/rating_weights.py`（纯函数）、`fusion_service.py`（v5 分支：标签路/罚项/重排/配额）、`config.py`+`config.yaml`+`config.example.yaml`（`fusion.v5` 段，默认 `enabled: false`）、repository `get_movies_genres_map`
 - [x] 单测：`tests/test_fusion_v5.py`（8 项：映射/频率/自校准纯函数 + 罚项/重排/配额/自校准排序/V4 不受扰），全过；V4 既有测试回归通过
 - [x] 分布指标模块 + V0/V4 基线表（本文件第三节）
-- [ ] holdout V5 消融（扩展 `heldout_fusion_eval.py` 加 V5 变体，VM 执行）
+- [x] holdout 评估框架扩展：`heldout_fusion_eval.py` 新增 V6_label_freq / V7_als_neg / V8_pop_rerank 三个无自由参数变体（固定权重 0.4/0.5/0.1，V6=标签路换频率x均分，V7=+ALS 负反馈罚项，V8=+热门重排=部署版全量），分布指标跑后用 distribution_metrics.py 出
+- [ ] VM 执行 holdout V5 消融（ 冒烟 --limit-users 先行，再全量）
 - [ ] V6：ItemCF 负图 Spark 重训（阈值 ≤2.0、K=100、β≥5）
 - [ ] 消融达标后切 `fusion.v5.enabled: true`
 

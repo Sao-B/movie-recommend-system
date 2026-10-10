@@ -12,6 +12,9 @@ V1 mean             ``Σ s_ji / count``                           无
 V2 smoothed         ``Σ s_ji / (count + k)``                     k ∈ {0,2,5,10}
 V3                  归一 V2 + 归一 ALS（权重重归一）               k + (w_i, w_a)
 V4                  V3 + 类型代理信号（权重重归一）                k + (w_i, w_a, w_g)
+V6 label-freq       V4 但类型路改频率权重x近期均分（权重固定）        无（EDA 定死）
+V7 als-neg          V6 + ALS 负反馈罚项（中心化余弦传播）            无（lambda/cap 定死）
+V8 pop-rerank       V7 + 热门降权重排（=部署版 V5 全量）             无（alpha 定死）
 =================  ==========================================  ==============
 
 协议要点
@@ -47,6 +50,7 @@ import json
 import os
 import sys
 import time
+from collections import defaultdict
 
 import numpy as np
 
@@ -68,6 +72,7 @@ from experiments.itemcf.heldout_als_eval import (  # noqa: E402
     solve_user_vector_explicit, verify_frozen_users,
 )
 from app.itemcf_service import ItemCFGraph  # noqa: E402
+from app.rating_weights import freq_weight, label_signal, rating_weight  # noqa: E402
 from experiments.pilot.metrics import ndcg_at_k  # noqa: E402
 
 #: tune/test 分离 salt（计划书 §5，先冻结后执行）。
@@ -89,6 +94,15 @@ VARIANT_NAMES = (
     'V0_raw_sum', 'V1_mean', 'V2_smoothed',
     'V3_itemcf_als', 'V4_itemcf_als_genre',
 )
+#: V6/V7/V8 的固定权重（与部署基线同起点；本次不进网格，权重重搜另跑）
+V5_FIXED_WEIGHTS = (0.4, 0.5, 0.1)
+#: V7 ALS 负反馈罚项系数与单项上限（EDA 2026-10-10 定稿）
+V5_ALS_NEG_LAMBDA = 0.2
+V5_ALS_NEG_CAP = 0.5
+#: V6 近期均分窗口（最近 N 条同标签评分）
+V5_RECENT_WINDOW = 10
+#: V8 热门降权指数（pop/median 的幂；scale 钳 1 = 只罚不奖）
+V5_POP_ALPHA = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -158,12 +172,14 @@ def collect_fusion_segments(train_path, holdout_path, eval_users, log=None):
     eval_set = set(int(u) for u in eval_users)
     train_by_user = {}
     support_by_movie = {}
+    pop_counts = {}   # V8 热门降权用：训练段全量物品评分数（不限评测用户）
     with open(train_path, newline='') as handle:
         for record in csv.reader(handle):
             user = int(record[0])
+            movie_id = int(record[1])
+            pop_counts[movie_id] = pop_counts.get(movie_id, 0) + 1
             if user not in eval_set:
                 continue
-            movie_id = int(record[1])
             rating = float(record[2])
             entry = train_by_user.setdefault(
                 user, {'rated': [], 'positive': []})
@@ -180,9 +196,10 @@ def collect_fusion_segments(train_path, holdout_path, eval_users, log=None):
             if float(record[2]) >= POSITIVE_THRESHOLD:
                 relevant_by_user.setdefault(user, set()).add(int(record[1]))
     if log:
-        log('eval users with train ratings: %d; with holdout positives: %d'
-            % (len(train_by_user), len(relevant_by_user)))
-    return train_by_user, relevant_by_user, support_by_movie
+        log('eval users with train ratings: %d; with holdout positives: %d; '
+            'train movies: %d' % (len(train_by_user), len(relevant_by_user),
+                                  len(pop_counts)))
+    return train_by_user, relevant_by_user, support_by_movie, pop_counts
 
 
 def build_r1_evidence(graph, positives, seen):
@@ -250,7 +267,8 @@ def als_top_k_candidates(user_vector, factor_movie_ids, factor_matrix, seen,
 def build_user_record(user, segments, relevant, graph, genre_map, factor_pos,
                       factor_movie_ids, factor_matrix, reg_param,
                       als_top_k=ALS_TOP_K, support_by_movie=None,
-                      als_min_support=0):
+                      als_min_support=0, pop_counts=None, matcn=None,
+                      recent_window=V5_RECENT_WINDOW):
     """单用户的候选并集与三路信号（对齐到升序 union 数组）。
 
     - R1：邻居表并集（相似度和 + 来源数）；
@@ -306,11 +324,66 @@ def build_user_record(user, segments, relevant, graph, genre_map, factor_pos,
             values = genre_map.get(movie_id)
             if values:
                 u_genre[pos] = len(values & profile) / float(len(profile))
+    # ---- V5 字段（V6/V7/V8；upstream 不给 matcn/pop_counts 时安全降级）----
+    # 声明标签：训练段 >=4 分 genre 频次 Top3；频率 = 全部评分计数；
+    # 分数信号 = 近 recent_window 条同标签评分均分（rated 列表按训练文件
+    # 时间序追加，尾部即最近）。
+    pos_cnt = {}
+    watch_cnt = {}
+    ratings_by_genre = defaultdict(list)
+    for movie_id, rating in rated:
+        for g in (genre_map.get(movie_id) or ()):
+            watch_cnt[g] = watch_cnt.get(g, 0) + 1
+            ratings_by_genre[g].append(float(rating))
+            if rating >= POSITIVE_THRESHOLD:
+                pos_cnt[g] = pos_cnt.get(g, 0) + 1
+    declared = [g for g, _c in sorted(pos_cnt.items(),
+                                      key=lambda kv: (-kv[1], kv[0]))[:3]]
+    v5_labels = {}
+    for g in declared:
+        rs = ratings_by_genre[g]
+        if len(rs) < 2:
+            continue
+        recent = rs[-int(recent_window):]
+        v5_labels[g] = (freq_weight(watch_cnt[g]),
+                        label_signal(sum(recent) / len(recent)))
+    u_label = np.full(n, np.nan, dtype=np.float64)
+    for pos, movie_id in enumerate(union_ids.tolist()):
+        matched = [v5_labels[g] for g in (genre_map.get(movie_id) or ())
+                   if g in v5_labels]
+        if matched:
+            u_label[pos] = max(fw * sig for fw, sig in matched)
+
+    # V7：ALS 负反馈罚项（评分差评 w(r)<0，中心化余弦传播，单项上限钳制）
+    u_als_pen = u_als.copy()
+    if matcn is not None and als_ids.shape[0]:
+        neg_pairs = [(m, rating_weight(r)) for m, r in rated
+                     if rating_weight(r) < 0 and m in factor_pos]
+        if neg_pairs:
+            neg_rows = np.asarray([factor_pos[m] for m, _w in neg_pairs],
+                                  dtype=np.int64)
+            neg_w = np.asarray([-w for _m, w in neg_pairs],
+                               dtype=np.float64)
+            cap = V5_ALS_NEG_CAP * float(neg_w.sum())
+            fac_rows = np.asarray([factor_pos[int(m)] for m in als_ids.tolist()],
+                                  dtype=np.int64)
+            sim_mat = matcn[fac_rows] @ matcn[neg_rows].T
+            pen = V5_ALS_NEG_LAMBDA * (np.clip(sim_mat, 0.0, None) @ neg_w)
+            at_pen = np.searchsorted(union_ids, als_ids)
+            u_als_pen[at_pen] -= np.minimum(pen, cap)
+
+    # V8 热度：训练段全量评分数（未提供的电影记 0）
+    u_pop = None
+    if pop_counts is not None:
+        u_pop = np.asarray([pop_counts.get(int(m), 0)
+                            for m in union_ids.tolist()], dtype=np.float64)
+
     return {
         'user_id': int(user), 'relevant': set(relevant),
         'u_ids': union_ids, 'u_sum': u_sum, 'u_cnt': u_cnt,
         'u_als': u_als, 'u_genre': u_genre, 'seen_count': len(seen),
         'als_candidates': int(als_ids.shape[0]),
+        'u_label': u_label, 'u_als_pen': u_als_pen, 'u_pop': u_pop,
     }
 
 
@@ -333,9 +406,12 @@ def normalize_signal(values, available):
     return normalized
 
 
-def variant_signals(record, with_genre):
+def variant_signals(record, with_genre, als_key='u_als', genre_key='u_genre'):
     """构造信号矩阵 ``(S, M)``：S 列 = [归一 itemcf裸求和, 归一 als(, 归一 genre)]，
     缺失位置记 0；M = 可用掩码（0/1）。
+
+    V6/V7/V8 通过 ``als_key='u_als_pen'``（含负反馈罚项）与
+    ``genre_key='u_label'``（频率权重 x 近期均分）切换信号列。
 
     设计修正（第二轮）：ItemCF 信号用**裸求和**逐用户 max 归一——此前用平滑分
     （÷(count+k)）导致网格里不存在"裸求和"这个点，w=[1,0,0] 也回不到 V0，
@@ -347,12 +423,18 @@ def variant_signals(record, with_genre):
     evidence = u_cnt > 0
     cols = [normalize_signal(u_sum, evidence)]
     masks = [evidence.astype(np.float64)]
-    als_avail = ~np.isnan(record['u_als'])
-    cols.append(normalize_signal(record['u_als'], als_avail))
+    als_values = record.get(als_key)
+    if als_values is None:
+        als_values = record['u_als']
+    als_avail = ~np.isnan(als_values)
+    cols.append(normalize_signal(als_values, als_avail))
     masks.append(als_avail.astype(np.float64))
     if with_genre:
-        genre_avail = ~np.isnan(record['u_genre'])
-        cols.append(normalize_signal(record['u_genre'], genre_avail))
+        genre_values = record.get(genre_key)
+        if genre_values is None:
+            genre_values = record['u_genre']
+        genre_avail = ~np.isnan(genre_values)
+        cols.append(normalize_signal(genre_values, genre_avail))
         masks.append(genre_avail.astype(np.float64))
     return np.column_stack(cols), np.column_stack(masks)
 
@@ -460,6 +542,38 @@ def score_variants_for_user(record, params, top_n):
         fused = fused_matrix(signals, availability, weights5)
         out['V5_coverage_oriented'] = top_n_from_matrix(
             fused, record['u_ids'], top_n)[0]
+
+    # ---- V6/V7/V8（EDA 2026-10-10；固定权重与参数，无自由参数）----
+    # V6 = V4 但类型路换「频率权重 x 近期均分」；V7 = V6 + ALS 负反馈罚项；
+    # V8 = V7 + 热门降权重排（= 部署版 V5 全量）。record 缺 V5 字段
+    # （旧测试的手工构造记录）时安全跳过。
+    if record.get('u_label') is not None:
+        weights_fixed = np.asarray(V5_FIXED_WEIGHTS,
+                                   dtype=np.float64).reshape(3, 1)
+        signals6, avail6 = variant_signals(
+            record, with_genre=True, genre_key='u_label')
+        fused6 = fused_matrix(signals6, avail6, weights_fixed)
+        out['V6_label_freq'] = top_n_from_matrix(
+            fused6, record['u_ids'], top_n)[0]
+
+        signals7, avail7 = variant_signals(
+            record, with_genre=True, als_key='u_als_pen',
+            genre_key='u_label')
+        fused7 = fused_matrix(signals7, avail7, weights_fixed)
+        out['V7_als_neg'] = top_n_from_matrix(
+            fused7, record['u_ids'], top_n)[0]
+
+        u_pop = record.get('u_pop')
+        fused8 = fused7
+        if u_pop is not None and V5_POP_ALPHA > 0.0:
+            pos_pops = u_pop[u_pop > 0]
+            med = (float(np.median(pos_pops)) if pos_pops.shape[0] else 1.0)
+            # reshape(-1,1)：fused7 是 (n,1) 矩阵，scale 一维相除会被 NumPy
+            # 广播成 (n,n)（每一列除以不同的 scale[j]），Top-N 就取错列了
+            scale = np.maximum(u_pop / max(med, 1.0), 1.0).reshape(-1, 1)
+            fused8 = fused7 / np.power(scale, V5_POP_ALPHA)   # 只罚不奖
+        out['V8_pop_rerank'] = top_n_from_matrix(
+            fused8, record['u_ids'], top_n)[0]
     return out
 
 
@@ -676,10 +790,14 @@ def main(argv=None):
     log('genre map: %d movies' % len(genre_map))
 
     # --- 4. 逐用户候选并集与信号 -------------------------------------
-    train_by_user, relevant_by_user, support_by_movie = \
+    train_by_user, relevant_by_user, support_by_movie, pop_counts = \
         collect_fusion_segments(train_path, holdout_path, eval_users,
                                 log=log)
     factor_pos = dict((int(m), p) for p, m in enumerate(movie_ids.tolist()))
+    # V7 中心化余弦基准（因子矩阵全局均值中心化后归一，只算一次）
+    _matc = matrix - matrix.mean(axis=0, keepdims=True)
+    _nrm = np.linalg.norm(_matc, axis=1, keepdims=True)
+    matcn = _matc / np.maximum(_nrm, 1e-12)
     catalog_size = args.catalog_size or int(movie_ids.shape[0])
     log('catalog size (coverage denominator): %d' % catalog_size)
     records = {}
@@ -694,7 +812,8 @@ def main(argv=None):
         records[user] = build_user_record(
             user, segments, relevant, graph, genre_map, factor_pos,
             movie_ids, matrix, reg_param, support_by_movie=support_by_movie,
-            als_min_support=args.als_min_support)
+            als_min_support=args.als_min_support, pop_counts=pop_counts,
+            matcn=matcn)
         scored_users.append(user)
         if len(scored_users) % 500 == 0:
             log('built candidates for %d users' % len(scored_users))
@@ -725,6 +844,12 @@ def main(argv=None):
     variant_names = list(VARIANT_NAMES)
     if 'V5_coverage_oriented' in params:
         variant_names.append('V5_coverage_oriented')
+    # V6/V7/V8：无自由参数，记录里带 V5 字段就一定产出（按首个用户探测）
+    for name in ('V6_label_freq', 'V7_als_neg', 'V8_pop_rerank'):
+        if name not in variant_names and scored_users \
+                and name in score_variants_for_user(
+                    records[scored_users[0]], params, args.top_n):
+            variant_names.append(name)
     recs_by_variant = dict((name, []) for name in variant_names)
     relevants = []
     for user in scored_users:
